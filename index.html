@@ -389,7 +389,14 @@ function renderFieldInput(f, value = '') {
   const req = f.required ? '<span class="text-rose-500 font-bold ml-1">*</span>' : '';
   const cmn = "w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/50 focus:border-sky-500 transition-all text-sm";
   let input = '';
-  
+
+  if (f.type === 'heading') {
+    return `<div class="md:col-span-2 pt-3 first:pt-0">
+      <h3 class="text-base sm:text-lg font-display font-bold text-slate-800 dark:text-white border-b border-slate-200 dark:border-slate-800 pb-2">${esc(f.label)}</h3>
+      ${f.desc ? `<p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-2">${esc(f.desc)}</p>` : ''}
+    </div>`;
+  }
+
   if (f.type === 'checkbox') {
     const checked = (value === true || value === 'true') ? 'checked' : '';
     return `<div class="space-y-1.5"><label class="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 cursor-pointer select-none">
@@ -468,6 +475,7 @@ document.addEventListener('change', e => {
 function collectForm(form, schema) {
   const fd = new FormData(form), data = {};
   schema.forEach(f => {
+    if (f.type === 'heading') return;
     if (f.type === 'checkbox') { const el = form.querySelector(`[name="${f.id}"]`); data[f.id] = !!(el && el.checked); }
     else if (f.type === 'select' && f.allowOther && fd.get(f.id) === '__OTHER__') data[f.id] = (fd.get(f.id + '__other') || '').trim();
     else data[f.id] = fd.get(f.id) || '';
@@ -572,7 +580,7 @@ function viewSiswa() {
             <span>Mohon periksa kembali isian Anda. Data yang dikirim tidak dapat diubah mandiri.</span>
           </div>
           <div class="rounded-2xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 divide-y divide-slate-200 dark:divide-slate-800">
-            ${schema.map(f => `<div class="px-5 py-3.5 grid grid-cols-1 sm:grid-cols-3 gap-2"><span class="text-xs font-bold text-slate-500 uppercase">${esc(f.label)}</span><span class="sm:col-span-2 text-sm text-slate-900 dark:text-slate-100 font-medium">${esc(draft[f.id]||'-')}</span></div>`).join('')}
+            ${schema.filter(f => f.type !== 'heading').map(f => `<div class="px-5 py-3.5 grid grid-cols-1 sm:grid-cols-3 gap-2"><span class="text-xs font-bold text-slate-500 uppercase">${esc(f.label)}</span><span class="sm:col-span-2 text-sm text-slate-900 dark:text-slate-100 font-medium">${esc(draft[f.id]||'-')}</span></div>`).join('')}
           </div>
           <div class="pt-4 flex flex-col sm:flex-row gap-4 justify-between border-t border-slate-200 dark:border-slate-800">
             <button id="backBtn" class="px-6 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-sm border border-slate-300 dark:border-slate-700">← Kembali Edit</button>
@@ -850,7 +858,7 @@ function viewAdmin() {
 }
 
 function fieldTypeLabel(t) {
-  return { text: 'Teks Singkat', textarea: 'Teks Panjang', date: 'Tanggal', select: 'Pilihan (Dropdown)', checkbox: 'Centang (Ya/Tidak)', cari: 'Cari (Referensi Data)' }[t] || t;
+  return { text: 'Teks Singkat', textarea: 'Teks Panjang', date: 'Tanggal', select: 'Pilihan (Dropdown)', checkbox: 'Centang (Ya/Tidak)', cari: 'Cari (Referensi Data)', heading: 'Judul/Teks' }[t] || t;
 }
 
 // Sumber data yang bisa dipakai oleh field bertipe "Cari"
@@ -928,7 +936,7 @@ function renderFormBuilder(container) {
 
   function openEditor(field) {
     const isNew = !field;
-    const f = field ? { ...field, options: [...(field.options || [])] } : { id: 'f_' + Date.now(), label: '', type: 'text', required: false, visibility: 'all', options: [], allowOther: false };
+    const f = field ? { ...field, options: [...(field.options || [])] } : { id: 'f_' + Date.now(), label: '', type: 'text', required: false, visibility: 'all', options: [], allowOther: false, desc: '' };
     const curVis = fieldVisibility(f);
 
     const overlay = el(`
@@ -941,12 +949,12 @@ function renderFormBuilder(container) {
 
           <div class="space-y-4">
             <div>
-              <label class="text-xs font-bold text-slate-500 block mb-1">Label Pertanyaan</label>
+              <label class="text-xs font-bold text-slate-500 block mb-1" id="fLabelCaption">Label Pertanyaan</label>
               <input id="fLabel" type="text" value="${esc(f.label)}" placeholder="Contoh: Ukuran Seragam" class="w-full p-2.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm">
             </div>
 
             <div>
-              <label class="text-xs font-bold text-slate-500 block mb-1">Tipe Jawaban</label>
+              <label class="text-xs font-bold text-slate-500 block mb-1">Tipe Field</label>
               <select id="fType" class="w-full p-2.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm">
                 <option value="text">Teks Singkat</option>
                 <option value="textarea">Teks Panjang</option>
@@ -954,6 +962,7 @@ function renderFormBuilder(container) {
                 <option value="select">Pilihan (Dropdown)</option>
                 <option value="checkbox">Centang (Ya/Tidak)</option>
                 <option value="cari">Cari (Referensi Data)</option>
+                <option value="heading">Judul/Teks (Bukan Pertanyaan)</option>
               </select>
             </div>
 
@@ -972,9 +981,14 @@ function renderFormBuilder(container) {
               <p class="text-xs text-slate-400">Kelola isi datanya di tab "Data Guru/Siswa" / "Data SMP" pada Panel Admin.</p>
             </div>
 
-            <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input id="fRequired" type="checkbox" ${f.required ? 'checked' : ''} class="rounded"> Wajib diisi</label>
+            <div id="descWrap" class="hidden space-y-2">
+              <label class="text-xs font-bold text-slate-500 block mb-1">Teks Keterangan (opsional)</label>
+              <textarea id="fDesc" rows="3" placeholder="Contoh: Isi bagian ini sesuai KTP/Kartu Keluarga." class="w-full p-2.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm">${esc(f.desc || '')}</textarea>
+            </div>
 
-            <div>
+            <label id="requiredWrap" class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input id="fRequired" type="checkbox" ${f.required ? 'checked' : ''} class="rounded"> Wajib diisi</label>
+
+            <div id="visWrap">
               <label class="text-xs font-bold text-slate-500 block mb-2">Siapa yang melihat/mengisi field ini?</label>
               <div class="space-y-2">
                 <label class="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300 p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer">
@@ -1001,8 +1015,13 @@ function renderFormBuilder(container) {
     typeSel.value = f.type;
     overlay.querySelector('#fSource').value = f.source || 'guru_siswa';
     function syncOptVisibility() {
+      const isHeading = typeSel.value === 'heading';
       overlay.querySelector('#optWrap').classList.toggle('hidden', typeSel.value !== 'select');
       overlay.querySelector('#sourceWrap').classList.toggle('hidden', typeSel.value !== 'cari');
+      overlay.querySelector('#descWrap').classList.toggle('hidden', !isHeading);
+      overlay.querySelector('#requiredWrap').classList.toggle('hidden', isHeading);
+      overlay.querySelector('#fLabelCaption').textContent = isHeading ? 'Teks Judul' : 'Label Pertanyaan';
+      overlay.querySelector('#fLabel').placeholder = isHeading ? 'Contoh: Data Orang Tua/Wali' : 'Contoh: Ukuran Seragam';
     }
     syncOptVisibility();
     typeSel.onchange = syncOptVisibility;
@@ -1015,16 +1034,17 @@ function renderFormBuilder(container) {
       const label = overlay.querySelector('#fLabel').value.trim();
       if (!label) { toast('Label pertanyaan tidak boleh kosong', 'error'); return; }
       const type = typeSel.value;
-      const required = overlay.querySelector('#fRequired').checked;
+      const required = type === 'heading' ? false : overlay.querySelector('#fRequired').checked;
       const visibility = overlay.querySelector('input[name="fVis"]:checked').value;
-      let options = [], allowOther = false, source = '';
+      let options = [], allowOther = false, source = '', desc = '';
       if (type === 'select') {
         options = overlay.querySelector('#fOpts').value.split('\n').map(x => x.trim()).filter(Boolean);
         if (!options.length) { toast('Tambahkan minimal satu pilihan jawaban', 'error'); return; }
         allowOther = overlay.querySelector('#fAllowOther').checked;
       }
       if (type === 'cari') { source = overlay.querySelector('#fSource').value; }
-      const newField = { id: f.id, label, type, required, visibility, options, allowOther, source };
+      if (type === 'heading') { desc = overlay.querySelector('#fDesc').value.trim(); }
+      const newField = { id: f.id, label, type, required, visibility, options, allowOther, source, desc };
       if (isNew) schema.push(newField);
       else { const idx = schema.findIndex(x => x.id === f.id); schema[idx] = newField; }
       DB.saveSchema(schema); draw(); overlay.remove();
@@ -1077,6 +1097,7 @@ function buildAndDownloadXlsx(aoa, sheetName, filename) {
 }
 // Susunan lengkap data pendaftar: seluruh field formulir + metadata (untuk Download Excel/CSV)
 function buildSubmissionRows(subs, schema) {
+  schema = schema.filter(f => f.type !== 'heading');
   const headers = ['No', 'No. Pendaftaran', ...schema.map(f => f.label), 'Sumber', 'Status Verifikasi', 'Status Pendaftaran', 'Tahun', 'Tanggal Daftar'];
   const rows = subs.map((s, i) => {
     const vals = schema.map(f => {
@@ -1134,7 +1155,7 @@ function renderDataTable(container) {
   };
 
   wrap.querySelector('#tplBtn').onclick = () => {
-    const headers = [...schema.map(f => f.label), 'Tahun (opsional)'];
+    const headers = [...schema.filter(f => f.type !== 'heading').map(f => f.label), 'Tahun (opsional)'];
     buildAndDownloadXlsx([headers], 'Template Import', 'Template_Import_Pendaftar.xlsx');
   };
 
@@ -1154,7 +1175,7 @@ function renderDataTable(container) {
       rows.forEach(row => {
         const rowN = {}; Object.keys(row).forEach(k => rowN[norm(k)] = row[k]);
         const data = {};
-        schema.forEach(f => {
+        schema.filter(f => f.type !== 'heading').forEach(f => {
           const val = rowN[norm(f.label)];
           if (val === undefined) return;
           data[f.id] = f.type === 'checkbox' ? /^(ya|yes|true|1)$/i.test(String(val).trim()) : String(val).trim();
