@@ -960,15 +960,16 @@ function renderFormBuilder(container) {
 
         function onMove(ev) {
           const y = ev.clientY;
-          const rows = listRows().filter(r => r !== rowEl);
-          for (const sib of rows) {
-            const rect = sib.getBoundingClientRect();
-            const mid = rect.top + rect.height / 2;
-            const rowIdx = listRows().indexOf(rowEl);
-            const sibIdx = listRows().indexOf(sib);
-            if (y < mid && sibIdx < rowIdx) { listEl.insertBefore(rowEl, sib); renumber(); break; }
-            if (y > mid && sibIdx > rowIdx) { listEl.insertBefore(rowEl, sib.nextSibling); renumber(); break; }
+          const others = listRows().filter(r => r !== rowEl);
+          // Cari langsung posisi tujuan berdasarkan titik tengah setiap baris lain,
+          // supaya field bisa "dilempar" ke posisi manapun dalam satu gerakan (tidak selangkah-selangkah).
+          let target = others.find(sib => y < (sib.getBoundingClientRect().top + sib.getBoundingClientRect().height / 2));
+          if (target) {
+            if (target.previousElementSibling !== rowEl) listEl.insertBefore(rowEl, target);
+          } else if (listEl.lastElementChild !== rowEl) {
+            listEl.appendChild(rowEl);
           }
+          renumber();
         }
 
         function onUp(ev) {
