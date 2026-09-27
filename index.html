@@ -892,14 +892,17 @@ function renderFormBuilder(container) {
     wrap.querySelector('#list').innerHTML = schema.map((f, i) => {
       const isPanitia = fieldVisibility(f) === 'panitia';
       return `
-      <div class="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+      <div data-field-id="${esc(f.id)}" class="field-row p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 transition-shadow">
         <div class="flex items-start sm:items-center gap-2 min-w-0 flex-1">
+          <div data-handle class="drag-handle flex-shrink-0 w-9 h-11 sm:h-14 flex items-center justify-center rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 cursor-grab active:cursor-grabbing select-none touch-none" title="Tahan lalu geser untuk memindah urutan" style="touch-action:none">
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M7 4a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm0 6a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm0 6a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm6-12a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm0 6a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm0 6a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0z"/></svg>
+          </div>
           <div class="flex flex-col flex-shrink-0">
             <button data-up="${i}" ${i === 0 ? 'disabled' : ''} title="Pindah ke atas" class="w-7 h-6 flex items-center justify-center rounded-t-lg bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 font-bold text-xs disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-300 dark:hover:bg-slate-600">▲</button>
             <button data-down="${i}" ${i === schema.length - 1 ? 'disabled' : ''} title="Pindah ke bawah" class="w-7 h-6 flex items-center justify-center rounded-b-lg bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 font-bold text-xs disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-300 dark:hover:bg-slate-600">▼</button>
           </div>
           <div class="min-w-0">
-            <p class="font-bold text-slate-900 dark:text-white text-sm truncate">${i + 1}. ${esc(f.label)} ${f.required ? '<span class="text-rose-500">*</span>' : ''}</p>
+            <p class="field-num-label font-bold text-slate-900 dark:text-white text-sm truncate"><span class="field-num">${i + 1}</span>. ${esc(f.label)} ${f.required ? '<span class="text-rose-500">*</span>' : ''}</p>
             <div class="flex flex-wrap gap-1.5 mt-1.5">
               <span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">${fieldTypeLabel(f.type)}</span>
               ${f.type === 'cari' ? `<span class="px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400">Cari dari: ${esc(cariSourceLabel(f.source))}</span>` : ''}
@@ -931,6 +934,64 @@ function renderFormBuilder(container) {
       if (i >= schema.length - 1) return;
       [schema[i], schema[i + 1]] = [schema[i + 1], schema[i]];
       DB.saveSchema(schema); draw(); toast('Urutan diperbarui', 'success');
+    });
+    attachDragHandlers();
+  }
+
+  // ===== Drag & drop reorder (Pointer Events: mouse & sentuh layar sama-sama jalan) =====
+  function attachDragHandlers() {
+    const listEl = wrap.querySelector('#list');
+    listEl.querySelectorAll('[data-handle]').forEach(handle => {
+      handle.onpointerdown = e => {
+        e.preventDefault();
+        const rowEl = handle.closest('.field-row');
+        if (!rowEl) return;
+        const listRows = () => Array.from(listEl.querySelectorAll('.field-row'));
+        rowEl.setPointerCapture(e.pointerId);
+        rowEl.classList.add('shadow-xl', 'ring-2', 'ring-indigo-400', 'relative', 'z-10', 'opacity-90');
+        document.body.style.userSelect = 'none';
+
+        function renumber() {
+          listRows().forEach((r, idx) => {
+            const numEl = r.querySelector('.field-num');
+            if (numEl) numEl.textContent = idx + 1;
+          });
+        }
+
+        function onMove(ev) {
+          const y = ev.clientY;
+          const rows = listRows().filter(r => r !== rowEl);
+          for (const sib of rows) {
+            const rect = sib.getBoundingClientRect();
+            const mid = rect.top + rect.height / 2;
+            const rowIdx = listRows().indexOf(rowEl);
+            const sibIdx = listRows().indexOf(sib);
+            if (y < mid && sibIdx < rowIdx) { listEl.insertBefore(rowEl, sib); renumber(); break; }
+            if (y > mid && sibIdx > rowIdx) { listEl.insertBefore(rowEl, sib.nextSibling); renumber(); break; }
+          }
+        }
+
+        function onUp(ev) {
+          rowEl.releasePointerCapture(ev.pointerId);
+          rowEl.classList.remove('shadow-xl', 'ring-2', 'ring-indigo-400', 'relative', 'z-10', 'opacity-90');
+          document.body.style.userSelect = '';
+          rowEl.removeEventListener('pointermove', onMove);
+          rowEl.removeEventListener('pointerup', onUp);
+          rowEl.removeEventListener('pointercancel', onUp);
+          const newOrderIds = listRows().map(r => r.dataset.fieldId);
+          const changed = newOrderIds.some((id, idx) => schema[idx] && schema[idx].id !== id);
+          if (changed) {
+            schema = newOrderIds.map(id => schema.find(f => f.id === id));
+            DB.saveSchema(schema);
+            toast('Urutan diperbarui', 'success');
+          }
+          draw();
+        }
+
+        rowEl.addEventListener('pointermove', onMove);
+        rowEl.addEventListener('pointerup', onUp);
+        rowEl.addEventListener('pointercancel', onUp);
+      };
     });
   }
 
