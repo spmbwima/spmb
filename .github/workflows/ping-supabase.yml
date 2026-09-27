@@ -1,0 +1,17 @@
+name: Ping Supabase
+
+on:
+  schedule:
+    # Jalan setiap 3 hari sekali, jam 00:00 UTC
+    - cron: '0 0 */3 * *'
+  workflow_dispatch: # biar bisa dijalankan manual juga
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API
+        run: |
+          curl -X GET "https://xrvkhamqarbtxismmxrs.supabase.co/rest/v1/" \
+          -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+          -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}"
