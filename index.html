@@ -106,8 +106,8 @@
 <header class="no-print sticky top-0 z-40 w-full glass-panel border-b-0">
   <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
     <!-- Brand Info -->
-    <div class="flex items-center space-x-3 cursor-pointer group" id="brandHomeBtn">
-      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 via-indigo-500 to-amber-400 p-0.5 shadow-lg shadow-sky-500/20 group-hover:shadow-sky-500/40 transition-all">
+    <div class="flex items-center space-x-3 cursor-pointer group min-w-0" id="brandHomeBtn">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 via-indigo-500 to-amber-400 p-0.5 shadow-lg shadow-sky-500/20 group-hover:shadow-sky-500/40 transition-all flex-shrink-0">
         <div id="logoBox" class="w-full h-full bg-white dark:bg-slate-900 rounded-[10px] flex items-center justify-center overflow-hidden transition-colors">
           <svg id="defaultLogoIcon" class="w-5 h-5 text-sky-500 dark:text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14l9-5-9-5-9 5 9 5z"/>
@@ -116,8 +116,8 @@
           <img id="customLogoImg" class="hidden w-full h-full object-cover" alt="Logo Sekolah">
         </div>
       </div>
-      <div>
-        <h1 class="font-display font-bold text-lg sm:text-xl text-slate-900 dark:text-white tracking-tight leading-none" id="schoolName">SMA Harapan Bangsa</h1>
+      <div class="min-w-0">
+        <h1 class="font-display font-bold text-sm sm:text-lg md:text-xl text-slate-900 dark:text-white tracking-tight leading-tight truncate" id="schoolName"></h1>
         <div class="flex items-center gap-2 mt-1">
           <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-sky-100 dark:bg-sky-500/10 text-sky-700 dark:text-sky-400 border border-sky-200 dark:border-sky-500/20" id="yearTag">SPMB 2026</span>
           <span class="text-xs text-slate-500 dark:text-slate-400 hidden sm:inline">• Portal Penerimaan Siswa Baru</span>
@@ -232,7 +232,7 @@ const cache = { settings: null, schema: null, subs: [], guruSiswa: [], smp: [] }
 
 function mapSettingsRow(r) {
   return {
-    schoolName: r?.school_name ?? 'SMA Harapan Bangsa',
+    schoolName: r?.school_name ?? 'SMK Widya Mandala Tambak',
     year: r?.year ?? String(new Date().getFullYear()),
     formTitle: r?.form_title ?? 'Formulir Pendaftaran',
     logo: r?.logo ?? '',
@@ -885,12 +885,18 @@ function renderFormBuilder(container) {
       const isPanitia = fieldVisibility(f) === 'panitia';
       return `
       <div class="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
-        <div class="min-w-0">
-          <p class="font-bold text-slate-900 dark:text-white text-sm truncate">${esc(f.label)} ${f.required ? '<span class="text-rose-500">*</span>' : ''}</p>
-          <div class="flex flex-wrap gap-1.5 mt-1.5">
-            <span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">${fieldTypeLabel(f.type)}</span>
-            ${f.type === 'cari' ? `<span class="px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400">Cari dari: ${esc(cariSourceLabel(f.source))}</span>` : ''}
-            <span class="px-2 py-0.5 rounded text-xs font-bold ${isPanitia ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-400'}">${isPanitia ? 'Khusus Panitia' : 'Panitia & Pendaftar'}</span>
+        <div class="flex items-start sm:items-center gap-2 min-w-0 flex-1">
+          <div class="flex flex-col flex-shrink-0">
+            <button data-up="${i}" ${i === 0 ? 'disabled' : ''} title="Pindah ke atas" class="w-7 h-6 flex items-center justify-center rounded-t-lg bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 font-bold text-xs disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-300 dark:hover:bg-slate-600">▲</button>
+            <button data-down="${i}" ${i === schema.length - 1 ? 'disabled' : ''} title="Pindah ke bawah" class="w-7 h-6 flex items-center justify-center rounded-b-lg bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 font-bold text-xs disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-300 dark:hover:bg-slate-600">▼</button>
+          </div>
+          <div class="min-w-0">
+            <p class="font-bold text-slate-900 dark:text-white text-sm truncate">${i + 1}. ${esc(f.label)} ${f.required ? '<span class="text-rose-500">*</span>' : ''}</p>
+            <div class="flex flex-wrap gap-1.5 mt-1.5">
+              <span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">${fieldTypeLabel(f.type)}</span>
+              ${f.type === 'cari' ? `<span class="px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400">Cari dari: ${esc(cariSourceLabel(f.source))}</span>` : ''}
+              <span class="px-2 py-0.5 rounded text-xs font-bold ${isPanitia ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-400'}">${isPanitia ? 'Khusus Panitia' : 'Panitia & Pendaftar'}</span>
+            </div>
           </div>
         </div>
         <div class="space-x-2 flex-shrink-0">
@@ -905,6 +911,18 @@ function renderFormBuilder(container) {
       const i = +b.dataset.del;
       if (!confirm(`Hapus field "${schema[i].label}"? Data yang sudah tersimpan pada field ini tidak akan ikut terhapus.`)) return;
       schema.splice(i, 1); DB.saveSchema(schema); draw(); toast('Field dihapus', 'success');
+    });
+    wrap.querySelectorAll('[data-up]').forEach(b => b.onclick = () => {
+      const i = +b.dataset.up;
+      if (i <= 0) return;
+      [schema[i - 1], schema[i]] = [schema[i], schema[i - 1]];
+      DB.saveSchema(schema); draw(); toast('Urutan diperbarui', 'success');
+    });
+    wrap.querySelectorAll('[data-down]').forEach(b => b.onclick = () => {
+      const i = +b.dataset.down;
+      if (i >= schema.length - 1) return;
+      [schema[i], schema[i + 1]] = [schema[i + 1], schema[i]];
+      DB.saveSchema(schema); draw(); toast('Urutan diperbarui', 'success');
     });
   }
 
