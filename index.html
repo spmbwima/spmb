@@ -133,8 +133,8 @@
         <svg id="moonIcon" class="w-5 h-5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
       </button>
 
-      <!-- Role Switcher -->
-      <div class="relative">
+      <!-- Role Switcher (disembunyikan otomatis pada link khusus siswa) -->
+      <div class="relative" id="roleSwitcher">
         <button id="settingsBtn" aria-haspopup="true" aria-expanded="false" class="flex items-center gap-2.5 px-3.5 sm:px-4 py-2.5 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-medium text-xs sm:text-sm transition-all duration-200 active:scale-95 shadow-sm">
           <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
           <span id="roleLabel">Portal Siswa</span>
@@ -175,6 +175,14 @@
 
 <script>
 const LS_KEY = { theme: 'spmb_theme' };
+
+// ==== Mode "Link Siswa" ====
+// Jika halaman dibuka dengan ?mode=siswa (atau #siswa), hanya formulir pendaftaran yang tampil:
+// menu Portal Panitia, Panel Admin, dan Pengaturan tidak dirender sama sekali.
+const STUDENT_ONLY = new URLSearchParams(location.search).get('mode') === 'siswa' || location.hash === '#siswa';
+function buildStudentLink() {
+  return location.href.split('#')[0].split('?')[0] + '?mode=siswa';
+}
 
 // ==== Supabase connection ====
 const SUPABASE_URL = 'https://xrvkhamqarbtxismmxrs.supabase.co';
@@ -1588,7 +1596,26 @@ function renderSettings(container) {
     updateHeader();
     toast('Pengaturan tersimpan', 'success');
   };
-  container.replaceChildren(form);
+  const linkCard = el(`
+    <div class="max-w-sm mb-8 p-4 rounded-2xl bg-sky-50 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/20 space-y-3">
+      <div>
+        <p class="text-sm font-bold text-slate-900 dark:text-white">Link Khusus Siswa Pendaftar</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Bagikan link ini ke calon siswa. Yang tampil hanya formulir pendaftaran, tanpa menu Portal Panitia, Panel Admin, dan Pengaturan.</p>
+      </div>
+      <input type="text" id="stuLink" readonly value="${esc(buildStudentLink())}" class="w-full p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white">
+      <div class="flex gap-2">
+        <button type="button" id="stuCopy" class="px-3 py-1.5 bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-lg text-xs">Salin Link</button>
+        <a id="stuOpen" href="${esc(buildStudentLink())}" target="_blank" rel="noopener" class="px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold rounded-lg text-xs">Buka Pratinjau</a>
+      </div>
+    </div>
+  `);
+  linkCard.querySelector('#stuCopy').onclick = async () => {
+    const inp = linkCard.querySelector('#stuLink');
+    try { await navigator.clipboard.writeText(inp.value); }
+    catch (e) { inp.select(); document.execCommand('copy'); }
+    toast('Link siswa disalin', 'success');
+  };
+  container.replaceChildren(linkCard, form);
 }
 
 function renderLogin(role) {
@@ -1628,6 +1655,7 @@ function updateHeader() {
 }
 
 function renderApp() {
+  if (STUDENT_ONLY) currentRole = 'siswa'; // kunci: tidak bisa pindah ke panitia/admin
   updateHeader();
   if (currentRole === 'siswa') viewSiswa();
   else if (currentRole === 'panitia') viewPanitia();
@@ -1637,10 +1665,14 @@ function renderApp() {
 document.getElementById('themeToggleBtn')?.addEventListener('click', toggleTheme);
 document.getElementById('brandHomeBtn').addEventListener('click', () => { currentRole = 'siswa'; renderApp(); });
 
-const setBtn = document.getElementById('settingsBtn'), setMenu = document.getElementById('settingsMenu');
-setBtn.addEventListener('click', e => { e.stopPropagation(); setMenu.classList.toggle('hidden'); });
-document.querySelectorAll('.role-opt').forEach(b => b.addEventListener('click', () => { currentRole = b.dataset.role; setMenu.classList.add('hidden'); renderApp(); }));
-document.addEventListener('click', () => setMenu.classList.add('hidden'));
+if (STUDENT_ONLY) {
+  document.getElementById('roleSwitcher')?.remove(); // hapus menu Portal Siswa/Panitia/Admin dari DOM
+} else {
+  const setBtn = document.getElementById('settingsBtn'), setMenu = document.getElementById('settingsMenu');
+  setBtn.addEventListener('click', e => { e.stopPropagation(); setMenu.classList.toggle('hidden'); });
+  document.querySelectorAll('.role-opt').forEach(b => b.addEventListener('click', () => { currentRole = b.dataset.role; setMenu.classList.add('hidden'); renderApp(); }));
+  document.addEventListener('click', () => setMenu.classList.add('hidden'));
+}
 
 initTheme();
 document.getElementById('app').innerHTML = '<div class="text-center py-20 text-slate-400 dark:text-slate-500">Memuat data dari server...</div>';
