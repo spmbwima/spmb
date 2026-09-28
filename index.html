@@ -1647,7 +1647,7 @@ function updateHeader() {
   document.getElementById('schoolName').textContent = s.schoolName;
   document.getElementById('yearTag').textContent = 'SPMB ' + s.year;
   document.getElementById('footerYear').textContent = new Date().getFullYear();
-  document.getElementById('roleLabel').textContent = currentRole === 'siswa' ? 'Portal Siswa' : currentRole === 'panitia' ? 'Panel Panitia' : 'Panel Admin';
+  const rl = document.getElementById('roleLabel'); if (rl) rl.textContent = currentRole === 'siswa' ? 'Portal Siswa' : currentRole === 'panitia' ? 'Panel Panitia' : 'Panel Admin';
 
   const logoImg = document.getElementById('customLogoImg'), defaultIcon = document.getElementById('defaultLogoIcon');
   if (s.logo) { logoImg.src = s.logo; logoImg.classList.remove('hidden'); defaultIcon.classList.add('hidden'); }
@@ -1678,7 +1678,8 @@ initTheme();
 document.getElementById('app').innerHTML = '<div class="text-center py-20 text-slate-400 dark:text-slate-500">Memuat data dari server...</div>';
 loadFromSupabase()
   .then(renderApp)
-  .catch(() => {
+  .catch((err) => {
+    console.error('Init error:', err);
     document.getElementById('app').innerHTML = '<div class="text-center py-20 text-rose-500 font-bold">Gagal terhubung ke Supabase.<br><span class="font-normal text-sm text-slate-500">Periksa URL/API key dan pastikan tabel spmb_settings, spmb_schema, spmb_submissions sudah dibuat.</span></div>';
   });
 </script>
