@@ -812,7 +812,7 @@ function viewPanitia() {
 
       <div id="tabRekap" class="space-y-6">
         <div id="statCards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
-        <div id="breakdownCards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+        <div id="breakdownCards" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
       </div>
 
       <div id="tabList" class="hidden">
@@ -826,59 +826,70 @@ function viewPanitia() {
     return yearFilter === 'ALL' ? all : all.filter(s => s.year === yearFilter);
   }
 
+  // Cari field berdasarkan id, lalu cadangan berdasarkan label (agar tetap jalan bila form diubah lewat Form Builder)
+  function findField(ids, labelRe, types) {
+    return schema.find(f => ids.includes(f.id) && types.includes(f.type)) ||
+           schema.find(f => labelRe.test(f.label || '') && types.includes(f.type));
+  }
+
   function drawStats() {
     const subs = getFilteredSubs();
-    // Pendaftar yang cabut berkas/keluar tidak lagi dihitung sebagai pendaftar aktif
+    // Pendaftar yang cabut berkas/keluar tidak dihitung sebagai pendaftar aktif
     const activeSubs = subs.filter(s => !s.withdrawn);
     const withdrawnCount = subs.length - activeSubs.length;
+    const totalAll = subs.length; // Total Pendaftar = pendaftar aktif + cabut berkas/keluar
     const vCount = activeSubs.filter(s => s.verified).length, pCount = activeSubs.length - vCount;
 
-    // Kartu ringkas: Jumlah Pendaftar (aktif), Terverifikasi, Belum Verifikasi, Cabut Berkas/Keluar
-    wrap.querySelector('#statCards').innerHTML = [
-      {t:'Jumlah Pendaftar', v:activeSubs.length, c:'sky'},
-      {t:'Terverifikasi', v:vCount, c:'emerald'},
-      {t:'Belum Verifikasi', v:pCount, c:'amber'},
+    const uniformFld = findField(['terima_seragam'], /seragam/i, ['checkbox']);
+    const isYes = v => v === true || v === 'true';
+    const uniYes = uniformFld ? activeSubs.filter(s => isYes(s.data[uniformFld.id])).length : 0;
+    const uniNo = activeSubs.length - uniYes;
+
+    const cards = [
+      {t:'Total Pendaftar', v:totalAll, c:'indigo', n:`${activeSubs.length} aktif + ${withdrawnCount} cabut berkas/keluar`},
+      {t:'Jumlah Pendaftar', v:activeSubs.length, c:'sky', n:'tidak termasuk yang cabut berkas/keluar'},
+      {t:'Belum Terverifikasi', v:pCount, c:'amber', n:`${vCount} sudah terverifikasi`},
       {t:'Cabut Berkas / Keluar', v:withdrawnCount, c:'rose'}
-    ].map(x => `
+    ];
+    if (uniformFld) {
+      cards.push({t:'Sudah Terima Seragam', v:uniYes, c:'teal', n:`dari ${activeSubs.length} pendaftar aktif`});
+      cards.push({t:'Belum Terima Seragam', v:uniNo, c:'orange', n:`dari ${activeSubs.length} pendaftar aktif`});
+    }
+    wrap.querySelector('#statCards').innerHTML = cards.map(x => `
       <div class="glass-card rounded-2xl p-5 border-l-4 border-l-${x.c}-500 flex justify-between items-center">
-        <div><p class="text-xs font-bold uppercase text-slate-500">${x.t}</p><p class="font-display text-3xl font-black text-slate-900 dark:text-white mt-1">${x.v}</p></div>
+        <div><p class="text-xs font-bold uppercase text-slate-500">${x.t}</p><p class="font-display text-3xl font-black text-slate-900 dark:text-white mt-1">${x.v}</p>${x.n ? `<p class="text-xs text-slate-400 mt-0.5">${x.n}</p>` : ''}</div>
       </div>
     `).join('');
 
-    // Kartu breakdown: satu kartu per field bertipe "select" (mis. Jumlah Setiap Jurusan)
-    // dan satu kartu per field bertipe "checkbox" (mis. Jumlah Terima Seragam)
+    // Kartu rekap per pilihan: Jenis Kelamin & Pilihan Jurusan (dihitung dari pendaftar aktif)
     const breakdownCards = [];
-
-    schema.filter(f => f.type === 'select' && (f.options||[]).length).forEach(f => {
+    const rowHtml = (label, v, cls) => `
+      <div class="flex justify-between items-center text-sm py-1.5 border-b border-slate-100 dark:border-slate-800 last:border-0">
+        <span class="${cls || 'text-slate-600 dark:text-slate-300'}">${esc(label)}</span>
+        <span class="font-bold ${cls ? 'text-slate-400' : 'text-slate-900 dark:text-white'}">${v}</span>
+      </div>`;
+    function addBreakdown(f, title) {
+      if (!f) return;
       const counts = {};
-      (f.options||[]).forEach(o => counts[o] = 0);
+      (f.options || []).forEach(o => counts[o] = 0);
       let other = 0, empty = 0;
       activeSubs.forEach(s => {
         const val = s.data[f.id];
         if (!val) { empty++; return; }
         if (val in counts) counts[val]++; else other++;
       });
-      const rows = Object.entries(counts).map(([label, v]) => `
-        <div class="flex justify-between items-center text-sm py-1.5 border-b border-slate-100 dark:border-slate-800 last:border-0">
-          <span class="text-slate-600 dark:text-slate-300">${esc(label)}</span>
-          <span class="font-bold text-slate-900 dark:text-white">${v}</span>
-        </div>`).join('') +
-        (other ? `<div class="flex justify-between items-center text-sm py-1.5 border-b border-slate-100 dark:border-slate-800 last:border-0"><span class="text-slate-600 dark:text-slate-300">Lainnya</span><span class="font-bold text-slate-900 dark:text-white">${other}</span></div>` : '') +
-        (empty ? `<div class="flex justify-between items-center text-sm py-1.5"><span class="text-slate-400 italic">Belum diisi</span><span class="font-bold text-slate-400">${empty}</span></div>` : '');
+      const rows = Object.entries(counts).map(([l, v]) => rowHtml(l, v)).join('') +
+        (other ? rowHtml('Lainnya', other) : '') +
+        (empty ? rowHtml('Belum diisi', empty, 'text-slate-400 italic') : '') +
+        `<div class="flex justify-between items-center text-sm pt-2 mt-1 border-t border-slate-200 dark:border-slate-700 font-bold text-slate-900 dark:text-white"><span>Total</span><span>${activeSubs.length}</span></div>`;
       breakdownCards.push(`
         <div class="glass-card rounded-2xl p-5">
-          <p class="text-xs font-bold uppercase text-slate-500 mb-2">Jumlah Setiap ${esc(f.label)}</p>
-          ${rows || '<p class="text-sm text-slate-400">Belum ada data</p>'}
+          <p class="text-xs font-bold uppercase text-slate-500 mb-2">${title}</p>
+          ${rows}
         </div>`);
-    });
-
-    schema.filter(f => f.type === 'checkbox').forEach(f => {
-      const yes = activeSubs.filter(s => s.data[f.id] === true || s.data[f.id] === 'true').length;
-      breakdownCards.push(`
-        <div class="glass-card rounded-2xl p-5 border-l-4 border-l-teal-500 flex justify-between items-center">
-          <div><p class="text-xs font-bold uppercase text-slate-500">Jumlah ${esc(f.label)}</p><p class="font-display text-3xl font-black text-slate-900 dark:text-white mt-1">${yes}</p><p class="text-xs text-slate-400 mt-0.5">dari ${activeSubs.length} pendaftar aktif</p></div>
-        </div>`);
-    });
+    }
+    addBreakdown(findField(['gender'], /jenis\s*kelamin|gender/i, ['select']), 'Rekap Jenis Kelamin');
+    addBreakdown(findField(['jurusan'], /jurusan/i, ['select']), 'Rekap Pilihan Jurusan');
 
     wrap.querySelector('#breakdownCards').innerHTML = breakdownCards.join('');
   }
@@ -920,6 +931,74 @@ function viewPanitia() {
       toast('Data tersimpan', 'success'); drawStats(); renderList();
     };
     wrap.querySelector('#pContent').replaceChildren(box);
+  }
+
+  // Modal detail: menampilkan seluruh data inputan pendaftar (semua field formulir + info pendaftaran)
+  function showDetail(entry) {
+    const fmtVal = (f, v) => {
+      if (f.type === 'checkbox') return (v === true || v === 'true') ? 'Ya' : 'Belum';
+      if (v === undefined || v === null || v === '') return '';
+      if (f.type === 'date' && /^\d{4}-\d{2}-\d{2}/.test(String(v))) {
+        const d = new Date(v); if (!isNaN(d)) return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+      }
+      return String(v);
+    };
+    const item = (label, val, wide) => `
+      <div class="${wide ? 'sm:col-span-2 ' : ''}p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+        <p class="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">${esc(label)}</p>
+        <p class="text-sm font-semibold text-slate-900 dark:text-white mt-0.5 whitespace-pre-line break-words">${val ? esc(val) : '<span class="text-slate-400 italic font-normal">Belum diisi</span>'}</p>
+      </div>`;
+    const known = new Set(schema.map(f => f.id));
+    let body = '';
+    schema.forEach(f => {
+      if (f.type === 'heading') {
+        body += `<h4 class="sm:col-span-2 pt-2 text-sm font-display font-bold text-slate-800 dark:text-white border-b border-slate-200 dark:border-slate-700 pb-1">${esc(f.label)}</h4>`;
+        return;
+      }
+      body += item(f.label, fmtVal(f, entry.data[f.id]), f.type === 'textarea' || f.type === 'cari');
+    });
+    // Data lama yang field-nya sudah tidak ada di formulir tetap ditampilkan
+    const extra = Object.keys(entry.data || {}).filter(k => !known.has(k) && !k.endsWith('__other'));
+    if (extra.length) {
+      body += `<h4 class="sm:col-span-2 pt-2 text-sm font-display font-bold text-slate-800 dark:text-white border-b border-slate-200 dark:border-slate-700 pb-1">Data Lainnya</h4>`;
+      extra.forEach(k => { const v = entry.data[k]; body += item(k, typeof v === 'boolean' ? (v ? 'Ya' : 'Belum') : (v == null ? '' : String(v)), true); });
+    }
+    const status = entry.withdrawn ? 'Cabut Berkas/Keluar' : (entry.verified ? 'Terverifikasi' : 'Pending (belum terverifikasi)');
+    const info =
+      item('No. Pendaftaran', entry.regNo) + item('Tahun Ajaran', entry.year) +
+      item('Status', status) + item('Sumber Input', entry.source === 'panitia' ? 'Diinput panitia' : 'Pendaftaran online (siswa)') +
+      item('Tanggal Daftar', entry.createdAt ? new Date(entry.createdAt).toLocaleString('id-ID') : '');
+
+    const ov = el(`
+      <div class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/70">
+        <div role="dialog" aria-modal="true" class="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-2xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 shadow-2xl">
+          <div class="flex justify-between items-start gap-4 p-5 border-b border-slate-200 dark:border-slate-800">
+            <div>
+              <p class="text-xs font-bold uppercase text-slate-500">Detail Pendaftar</p>
+              <h3 class="font-display text-xl font-bold text-slate-900 dark:text-white">${esc(entry.data.nama || '-')}</h3>
+            </div>
+            <button type="button" data-x="close" class="text-2xl leading-none text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" aria-label="Tutup">&times;</button>
+          </div>
+          <div class="p-5 overflow-y-auto space-y-5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${info}</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${body}</div>
+          </div>
+          <div class="flex justify-end gap-2 p-4 border-t border-slate-200 dark:border-slate-800">
+            <button type="button" data-x="edit" class="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100 font-bold text-sm">Edit</button>
+            <button type="button" data-x="close" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-sm">Tutup</button>
+          </div>
+        </div>
+      </div>`);
+    const onKey = e => { if (e.key === 'Escape') close(); };
+    const close = () => { document.removeEventListener('keydown', onKey); ov.remove(); };
+    ov.onclick = e => {
+      if (e.target === ov) return close();
+      const b = e.target.closest('button[data-x]'); if (!b) return;
+      close();
+      if (b.dataset.x === 'edit') openForm(entry);
+    };
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(ov);
   }
 
   function renderList() {
@@ -964,6 +1043,7 @@ function viewPanitia() {
             return `<td class="p-3 text-sm text-slate-800 dark:text-slate-100">${esc(s.data[f.id]||'-')}</td>`;
           }).join('')}
           <td class="p-3 text-right space-x-2 whitespace-nowrap">
+            <button data-id="${s.id}" data-act="dt" class="text-xs px-2.5 py-1.5 bg-sky-600 text-white rounded font-bold">Detail</button>
             <button data-id="${s.id}" data-act="e" class="text-xs px-2.5 py-1.5 bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded font-bold">Edit</button>
             <button data-id="${s.id}" data-act="v" class="text-xs px-2.5 py-1.5 ${s.verified?'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100':'bg-emerald-600 text-white'} rounded font-bold">${s.verified?'Batal':'Verify'}</button>
             <button data-id="${s.id}" data-act="w" class="text-xs px-2.5 py-1.5 ${s.withdrawn?'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100':'bg-rose-600 text-white'} rounded font-bold">${s.withdrawn?'Aktifkan Kembali':'Cabut Berkas/Keluar'}</button>
@@ -976,6 +1056,7 @@ function viewPanitia() {
     table.onclick = async e => {
       const b = e.target.closest('button'); if(!b) return;
       const entry = DB.getSubmissions().find(x => x.id === b.dataset.id); if(!entry) return;
+      if(b.dataset.act==='dt') { showDetail(entry); return; }
       if(b.dataset.act==='e') { openForm(entry); return; }
       const who = `<b>${esc(entry.data.nama || '-')}</b> (${esc(entry.regNo)})`;
       if(b.dataset.act==='v') {
