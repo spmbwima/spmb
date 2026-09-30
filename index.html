@@ -1288,7 +1288,9 @@ function renderGuruSiswaAdmin(container) {
         <button id="expXlsx" type="button" class="px-3 py-2 bg-emerald-500 text-white rounded-xl font-bold text-xs whitespace-nowrap">Download Excel</button>
         <button id="impBtn" type="button" class="px-3 py-2 bg-sky-500 text-white rounded-xl font-bold text-xs whitespace-nowrap">Import Excel</button>
         <input type="file" id="impFile" accept=".xlsx,.xls" class="hidden">
+        <button id="syncRapor" type="button" class="px-3 py-2 bg-violet-500 text-white rounded-xl font-bold text-xs whitespace-nowrap">Sinkron dari Rapor</button>
       </div>
+      <p id="syncInfo" class="text-xs text-slate-500 hidden"></p>
       <div id="list" class="space-y-2"></div>
       <button id="saveAll" type="button" class="px-4 py-2 bg-emerald-500 text-white font-bold rounded-xl text-sm">Simpan Perubahan</button>
     </div>
@@ -1299,6 +1301,7 @@ function renderGuruSiswaAdmin(container) {
     const filtered = items.map((it, i) => ({ it, i })).filter(({it}) => (it.nama||'').toLowerCase().includes(q));
     wrap.querySelector('#list').innerHTML = filtered.length ? filtered.map(({it, i}) => `
       <div class="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col sm:flex-row sm:items-center gap-3">
+        ${it.src==='rapor' ? '<span title="Berasal dari sinkron Rapor; diperbarui saat sinkron berikutnya" class="px-2 py-0.5 rounded-md bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-300 text-[10px] font-bold flex-shrink-0 self-start sm:self-center">Rapor</span>' : ''}
         <input data-f="nama" data-i="${i}" type="text" value="${esc(it.nama||'')}" placeholder="Nama" class="flex-1 p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
         <select data-f="jenis" data-i="${i}" class="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
           <option value="Guru" ${it.jenis==='Guru'?'selected':''}>Guru</option>
@@ -1322,6 +1325,34 @@ function renderGuruSiswaAdmin(container) {
   wrap.querySelector('#saveAll').onclick = () => {
     if (items.some(it => !(it.nama||'').trim())) { toast('Nama tidak boleh kosong', 'error'); return; }
     DB.saveGuruSiswaList(items); toast('Data Guru/Siswa tersimpan', 'success');
+  };
+  wrap.querySelector('#syncRapor').onclick = async (e) => {
+    const btn = e.currentTarget;
+    if (!confirm('Tarik data nama guru, nama siswa, dan kelas dari aplikasi Rapor?\n\nData hasil sinkron sebelumnya akan diganti dengan data terbaru. Data yang Anda tambah manual tidak diubah.\nPerubahan di tab ini yang belum disimpan akan hilang.')) return;
+    const info = wrap.querySelector('#syncInfo');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Menyinkronkan...';
+    info.classList.remove('hidden'); info.textContent = 'Mengambil data dari Rapor...';
+    try {
+      const { data, error } = await supabaseClient.functions.invoke('sync-rapor', { body: { admin_pass: DB.getSettings().adminPass } });
+      if (error) {
+        let msg = error.message;
+        try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch (_) {}
+        throw new Error(msg);
+      }
+      if (!data || data.error) throw new Error((data && data.error) || 'Respon kosong dari server');
+      cache.guruSiswa = data.items || [];
+      items = JSON.parse(JSON.stringify(cache.guruSiswa));
+      query = ''; wrap.querySelector('#q').value = '';
+      draw();
+      info.textContent = `Sinkron selesai (TA ${data.tahun_ajaran}): ${data.guru} guru, ${data.siswa} siswa` + (data.dilewati_duplikat ? `, ${data.dilewati_duplikat} dilewati karena sudah ada manual` : '') + '.';
+      toast('Sinkron dari Rapor berhasil', 'success');
+    } catch (err) {
+      console.error(err);
+      info.textContent = 'Gagal sinkron: ' + err.message;
+      toast('Gagal sinkron dari Rapor', 'error');
+    }
+    btn.disabled = false; btn.textContent = label;
   };
   wrap.querySelector('#expXlsx').onclick = () => {
     if (!items.length) { toast('Belum ada data untuk diunduh', 'error'); return; }
