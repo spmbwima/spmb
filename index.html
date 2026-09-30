@@ -200,6 +200,9 @@ const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // Baris akan otomatis terbuat (upsert) saat admin pertama kali klik "Simpan Perubahan"
 // di tab Data Guru/Siswa atau Data SMP, tidak perlu insert manual.
 
+// Agar tombol "Hapus" pendaftar berfungsi, tabel spmb_submissions perlu policy DELETE (jalankan sekali di SQL Editor Supabase):
+//   create policy "public delete" on spmb_submissions for delete using (true);
+// Kop dokumen (PNG) disimpan di spmb_lists id 'kop' (tabel yang sama, tidak perlu migrasi tambahan).
 // Kolom baru yang perlu ditambahkan ke tabel spmb_submissions untuk fitur "Cabut Berkas/Keluar":
 //   alter table spmb_submissions add column withdrawn boolean default false;
 
@@ -236,7 +239,7 @@ function toggleTheme() {
 // Local cache kept in sync with Supabase. Reads (getX) are synchronous and
 // hit this cache; writes (saveX/addX/updateX) push to Supabase and patch the
 // cache immediately so the UI stays responsive.
-const cache = { settings: null, schema: null, subs: [], guruSiswa: [], smp: [] };
+const cache = { settings: null, schema: null, subs: [], guruSiswa: [], smp: [], fee: null, kop: '' };
 
 function mapSettingsRow(r) {
   return {
@@ -296,6 +299,19 @@ const DB = {
       .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan perubahan ke server', 'error'); } });
     return cache.subs[i];
   },
+  // Hapus permanen satu pendaftar (butuh policy DELETE di tabel spmb_submissions)
+  deleteSubmission: async function(id) {
+    const { data, error } = await supabaseClient.from('spmb_submissions').delete().eq('id', id).select();
+    if (error || !data || !data.length) {
+      console.error(error || 'delete: tidak ada baris terhapus');
+      toast('Gagal menghapus di server. Pastikan policy DELETE di tabel spmb_submissions sudah ada.', 'error');
+      return false;
+    }
+    cache.subs = cache.subs.filter(x => x.id !== id);
+    const fc = this.getFeeConfig();
+    if (id in fc.overrides) { delete fc.overrides[id]; this.saveFeeConfig(fc); } // bersihkan fee khusus milik pendaftar ini
+    return true;
+  },
   getYears: function() {
     const years = new Set(this.getSubmissions().map(s => s.year).filter(Boolean));
     years.add(this.getSettings().year);
@@ -309,6 +325,20 @@ const DB = {
       .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan Data Guru/Siswa ke server', 'error'); } });
   },
   // Data referensi Nama SMP: dipakai field bertipe "Cari" untuk standarisasi asal sekolah
+  // Pengaturan & nilai fee khusus per pendaftar (rekap fee sponsor): disimpan di spmb_lists id 'fee_config' (tanpa migrasi tabel)
+  getFeeConfig: () => ({ ...feeDefaults(), ...(cache.fee || {}), overrides: { ...((cache.fee && cache.fee.overrides) || {}) } }),
+  saveFeeConfig: function(c) {
+    cache.fee = c;
+    supabaseClient.from('spmb_lists').upsert({ id: 'fee_config', items: [c] })
+      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan pengaturan fee ke server', 'error'); } });
+  },
+  // Gambar kop dokumen (PNG) untuk semua rekap/cetak: disimpan di spmb_lists id 'kop' (tanpa migrasi tabel)
+  getKop: () => cache.kop || '',
+  saveKop: function(dataUrl) {
+    cache.kop = dataUrl || '';
+    supabaseClient.from('spmb_lists').upsert({ id: 'kop', items: [{ image: cache.kop }] })
+      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan kop dokumen ke server', 'error'); } });
+  },
   getSmpList: () => cache.smp || [],
   saveSmpList: function(items) {
     cache.smp = items;
@@ -340,6 +370,10 @@ async function loadFromSupabase() {
   if (!listsRes.error && Array.isArray(listsRes.data)) {
     const gs = listsRes.data.find(r => r.id === 'guru_siswa');
     const sm = listsRes.data.find(r => r.id === 'smp');
+    const fc = listsRes.data.find(r => r.id === 'fee_config');
+    const kp = listsRes.data.find(r => r.id === 'kop');
+    cache.kop = (kp && Array.isArray(kp.items) && kp.items[0] && typeof kp.items[0].image === 'string') ? kp.items[0].image : '';
+    cache.fee = (fc && Array.isArray(fc.items) && fc.items[0] && typeof fc.items[0] === 'object') ? fc.items[0] : null;
     cache.guruSiswa = (gs && Array.isArray(gs.items)) ? gs.items : [];
     cache.smp = (sm && Array.isArray(sm.items)) ? sm.items : [];
   } else {
@@ -385,12 +419,80 @@ function toast(msg, type = 'info') {
   setTimeout(() => { t.classList.add('opacity-0', 'translate-y-2'); setTimeout(() => t.remove(), 300); }, 2800);
 }
 
+// Dialog konfirmasi (promise). message = HTML yang sudah di-escape oleh pemanggil.
+function confirmAction({ title, message, okLabel = 'Ya, Lanjutkan', tone = 'primary' }) {
+  return new Promise(resolve => {
+    const okCls = tone === 'danger' ? 'bg-rose-600 hover:bg-rose-700' : tone === 'success' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-600 hover:bg-sky-700';
+    const ov = el(`
+      <div class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/70">
+        <div role="dialog" aria-modal="true" class="w-full max-w-sm rounded-2xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 shadow-2xl p-6 space-y-4">
+          <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">${esc(title)}</h3>
+          <p class="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">${message}</p>
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" data-r="0" class="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100 font-bold text-sm">Batal</button>
+            <button type="button" data-r="1" class="px-4 py-2 rounded-xl ${okCls} text-white font-bold text-sm">${esc(okLabel)}</button>
+          </div>
+        </div>
+      </div>`);
+    const onKey = e => { if (e.key === 'Escape') done(false); };
+    const done = v => { document.removeEventListener('keydown', onKey); ov.remove(); resolve(v); };
+    ov.onclick = e => { if (e.target === ov) return done(false); const b = e.target.closest('button[data-r]'); if (b) done(b.dataset.r === '1'); };
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(ov);
+    ov.querySelector('button[data-r="1"]').focus();
+  });
+}
+
+// Bilah "Pilih semua + Hapus Terpilih" untuk Data Guru/Siswa & Data SMP
+function bulkBarHtml() {
+  return `<div class="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700">
+    <label class="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100 cursor-pointer"><input type="checkbox" id="selAll" class="w-5 h-5 rounded accent-indigo-500 cursor-pointer"> Pilih semua</label>
+    <span id="selInfo" class="text-xs font-semibold text-slate-700 dark:text-slate-300"></span>
+    <button id="delSel" type="button" class="ml-auto px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs disabled:opacity-40 disabled:cursor-not-allowed">Hapus Terpilih</button>
+  </div>`;
+}
+function syncBulkBar(wrap, visIdx, sel) {
+  const n = visIdx.filter(i => sel.has(i)).length, all = wrap.querySelector('#selAll');
+  all.checked = visIdx.length > 0 && n === visIdx.length;
+  all.indeterminate = n > 0 && n < visIdx.length;
+  all.disabled = !visIdx.length;
+  wrap.querySelector('#selInfo').textContent = sel.size ? `${sel.size} dipilih` : '';
+  const d = wrap.querySelector('#delSel');
+  d.disabled = !sel.size; d.textContent = sel.size ? `Hapus Terpilih (${sel.size})` : 'Hapus Terpilih';
+}
+
 function copyToClipboard(text) {
   const input = document.createElement('textarea');
   input.value = text; document.body.appendChild(input); input.select();
   try { document.execCommand('copy'); toast('Nomor berhasil disalin!', 'success'); } 
   catch (err) { toast('Gagal menyalin', 'error'); }
   document.body.removeChild(input);
+}
+
+// Field "Cari" yang boleh diisi lebih dari satu (mis. beberapa sponsor). Nilai disimpan sebagai teks dipisah "; ".
+// Field lama tanpa properti multi: otomatis multi bila sumbernya Data Guru/Siswa.
+function isMultiCari(f) { return f.type === 'cari' && (typeof f.multi === 'boolean' ? f.multi : f.source === 'guru_siswa'); }
+function splitMulti(v) { return String(v ?? '').split(';').map(x => x.trim()).filter(Boolean); }
+function cariChipHtml(name) {
+  return `<span class="cariChip inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-300 text-sm font-semibold" data-val="${esc(name)}"><span>${esc(name)}</span><button type="button" class="cariChipX w-5 h-5 rounded-full hover:bg-sky-200 dark:hover:bg-sky-500/40 text-sky-700 dark:text-sky-300 font-bold leading-none" aria-label="Hapus">×</button></span>`;
+}
+function cariChosen(wrap) { return Array.from(wrap.querySelectorAll('.cariChip')).map(c => c.dataset.val); }
+function cariSyncMulti(wrap) {
+  const names = cariChosen(wrap);
+  wrap.querySelector('input[type=hidden]').value = names.join('; ');
+  wrap.querySelector('.cariInput').required = wrap.dataset.required === '1' && !names.length;
+}
+function cariAddChip(wrap, val) {
+  val = String(val || '').trim().replace(/;/g, ',');
+  const input = wrap.querySelector('.cariInput');
+  if (!val) return;
+  if (!cariChosen(wrap).some(n => n.toLowerCase() === val.toLowerCase())) {
+    wrap.querySelector('.cariChips').appendChild(el(cariChipHtml(val)));
+  }
+  input.value = '';
+  cariSyncMulti(wrap);
+  wrap.querySelector('.cariDropdown').classList.add('hidden');
+  input.focus();
 }
 
 function renderFieldInput(f, value = '') {
@@ -426,6 +528,19 @@ function renderFieldInput(f, value = '') {
         </select>
         ${f.allowOther ? `<input type="text" name="${f.id}__other" class="otherInput ${selVal === '__OTHER__' ? '' : 'hidden'} ${cmn} mt-2" placeholder="Sebutkan..." value="${isOther ? esc(value) : ''}" ${(f.required && selVal === '__OTHER__') ? 'required' : ''}>` : ''}
       </div>`;
+  } else if (f.type === 'cari' && isMultiCari(f)) {
+    const chosen = splitMulti(value);
+    input = `
+      <div class="relative cariWrap" data-source="${esc(f.source || '')}" data-multi="1" data-required="${f.required ? '1' : '0'}">
+        <input type="hidden" name="${f.id}" value="${esc(chosen.join('; '))}">
+        <div class="cariChips flex flex-wrap gap-2 mb-2">${chosen.map(cariChipHtml).join('')}</div>
+        <div class="flex gap-2">
+          <input type="text" data-cari-for="${f.id}" autocomplete="off" class="cariInput ${cmn}" placeholder="Ketik untuk mencari ${esc(f.label).toLowerCase()}, lalu pilih atau tekan Enter..." ${(f.required && !chosen.length) ? 'required' : ''}>
+          <button type="button" class="cariAddBtn px-4 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-sm flex-shrink-0">+ Tambah</button>
+        </div>
+        <p class="text-xs text-slate-400 mt-1">Boleh lebih dari satu. Tambahkan satu per satu.</p>
+        <div class="cariDropdown hidden absolute z-30 mt-1 w-full max-h-56 overflow-y-auto rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 shadow-xl"></div>
+      </div>`;
   } else if (f.type === 'cari') {
     input = `
       <div class="relative cariWrap" data-source="${esc(f.source || '')}">
@@ -448,7 +563,9 @@ function drawCariDropdown(input) {
   if (!list.length) {
     dd.innerHTML = `<div class="px-3 py-2.5 text-xs text-slate-400">Belum ada data pada ${esc(cariSourceLabel(source))}. Hubungi admin, atau isi manual sebagai teks.</div>`;
   } else {
-    const matches = (q ? list.filter(it => (it.nama || '').toLowerCase().includes(q)) : list).slice(0, 8);
+    const chosen = wrap.dataset.multi === '1' ? cariChosen(wrap).map(n => n.toLowerCase()) : [];
+    const pool = chosen.length ? list.filter(it => !chosen.includes((it.nama || '').toLowerCase())) : list;
+    const matches = (q ? pool.filter(it => (it.nama || '').toLowerCase().includes(q)) : pool).slice(0, 8);
     dd.innerHTML = matches.length
       ? matches.map(it => `<button type="button" data-val="${esc(it.nama || '')}" class="cariOpt w-full text-left px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200">${cariItemDisplay(it, source)}</button>`).join('')
       : `<div class="px-3 py-2.5 text-xs text-slate-400">Tidak ditemukan. Anda tetap bisa mengisi teks bebas.</div>`;
@@ -456,11 +573,31 @@ function drawCariDropdown(input) {
   dd.classList.remove('hidden');
 }
 document.addEventListener('input', e => { if (e.target.matches('.cariInput')) drawCariDropdown(e.target); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.matches('.cariInput')) {
+    const wrap = e.target.closest('.cariWrap');
+    if (wrap && wrap.dataset.multi === '1') { e.preventDefault(); cariAddChip(wrap, e.target.value); }
+  }
+});
 document.addEventListener('focusin', e => { if (e.target.matches('.cariInput')) drawCariDropdown(e.target); });
 document.addEventListener('click', e => {
+  const chipX = e.target.closest('.cariChipX');
+  if (chipX) {
+    const wrap = chipX.closest('.cariWrap');
+    chipX.closest('.cariChip').remove();
+    cariSyncMulti(wrap);
+    return;
+  }
+  const addBtn = e.target.closest('.cariAddBtn');
+  if (addBtn) {
+    const wrap = addBtn.closest('.cariWrap');
+    cariAddChip(wrap, wrap.querySelector('.cariInput').value);
+    return;
+  }
   const opt = e.target.closest('.cariOpt');
   if (opt) {
     const wrap = opt.closest('.cariWrap');
+    if (wrap.dataset.multi === '1') { cariAddChip(wrap, opt.dataset.val); return; }
     wrap.querySelector('.cariInput').value = opt.dataset.val;
     wrap.querySelector('.cariDropdown').classList.add('hidden');
     return;
@@ -485,6 +622,14 @@ function collectForm(form, schema) {
   schema.forEach(f => {
     if (f.type === 'heading') return;
     if (f.type === 'checkbox') { const el = form.querySelector(`[name="${f.id}"]`); data[f.id] = !!(el && el.checked); }
+    else if (isMultiCari(f)) {
+      // gabungkan chip yang sudah dipilih + teks yang masih diketik (belum ditekan Tambah)
+      const names = splitMulti(fd.get(f.id));
+      const pend = form.querySelector(`[data-cari-for="${f.id}"]`);
+      const t = pend ? pend.value.trim().replace(/;/g, ',') : '';
+      if (t && !names.some(n => n.toLowerCase() === t.toLowerCase())) names.push(t);
+      data[f.id] = names.join('; ');
+    }
     else if (f.type === 'select' && f.allowOther && fd.get(f.id) === '__OTHER__') data[f.id] = (fd.get(f.id + '__other') || '').trim();
     else data[f.id] = fd.get(f.id) || '';
   });
@@ -638,7 +783,7 @@ function viewPanitia() {
 
   const schema = DB.getSchema();
   const years = DB.getYears();
-  let yearFilter = 'ALL';
+  let yearFilter = String(DB.getSettings().year || 'ALL'); // default: tahun ajaran aktif
 
   const wrap = el(`
     <div class="space-y-6">
@@ -651,7 +796,7 @@ function viewPanitia() {
           <div class="relative">
             <select id="yearFilter" class="appearance-none pl-3 pr-8 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold text-sm focus:outline-none focus:ring-2 focus:ring-amber-500">
               <option value="ALL">Semua Tahun Ajaran</option>
-              ${years.map(y => `<option value="${esc(y)}">Tahun Ajaran ${esc(y)}</option>`).join('')}
+              ${years.map(y => `<option value="${esc(y)}" ${String(y) === yearFilter ? 'selected' : ''}>Tahun Ajaran ${esc(y)}${String(y) === String(DB.getSettings().year) ? ' (Aktif)' : ''}</option>`).join('')}
             </select>
             <svg class="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
           </div>
@@ -660,11 +805,19 @@ function viewPanitia() {
         </div>
       </div>
 
-      <div id="statCards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
+      <div class="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 overflow-x-auto">
+        <button data-ptab="rekap" class="ptab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap">Rekapitulasi</button>
+        <button data-ptab="list" class="ptab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap">Data Pendaftar</button>
+      </div>
 
-      <div id="breakdownCards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+      <div id="tabRekap" class="space-y-6">
+        <div id="statCards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
+        <div id="breakdownCards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+      </div>
 
-      <div id="pContent" class="glass-panel rounded-3xl p-6 shadow-sm"></div>
+      <div id="tabList" class="hidden">
+        <div id="pContent" class="glass-panel rounded-3xl p-6 shadow-sm"></div>
+      </div>
     </div>
   `);
 
@@ -731,7 +884,20 @@ function viewPanitia() {
   }
 
   wrap.querySelector('#outBtn').onclick = () => { sessionStorage.removeItem('spmb_panitia_auth'); currentRole='siswa'; renderApp(); };
-  wrap.querySelector('#addBtn').onclick = () => openForm();
+  // Tab Panel Panitia: Rekapitulasi (statistik) dan Data Pendaftar (daftar masuk) dipisah
+  let ptab = 'rekap';
+  function setPtab(t) {
+    ptab = t;
+    wrap.querySelector('#tabRekap').classList.toggle('hidden', t !== 'rekap');
+    wrap.querySelector('#tabList').classList.toggle('hidden', t !== 'list');
+    wrap.querySelectorAll('.ptab-btn').forEach(b => {
+      const a = b.dataset.ptab === t;
+      b.className = `ptab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap ${a ? 'bg-amber-500 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'}`;
+    });
+    window.scrollTo(0, 0);
+  }
+  wrap.querySelectorAll('.ptab-btn').forEach(b => b.onclick = () => setPtab(b.dataset.ptab));
+  wrap.querySelector('#addBtn').onclick = () => { setPtab('list'); openForm(); };
   wrap.querySelector('#yearFilter').onchange = e => { yearFilter = e.target.value; drawStats(); renderList(); };
 
   function openForm(ext) {
@@ -768,61 +934,88 @@ function viewPanitia() {
         <div class="flex flex-col sm:flex-row gap-3"><input type="text" id="s" placeholder="Cari..." class="w-full sm:w-64 px-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-amber-500"></div>
         <div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
           <table class="w-full text-left text-sm">
-            <thead class="bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 font-bold uppercase text-xs">
+            <thead class="bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-bold uppercase text-xs">
               <tr>
                 <th class="p-3">No. Daftar</th><th class="p-3">Nama</th><th class="p-3">Th. Ajaran</th><th class="p-3">Status</th>
                 ${extraFields.map(f => `<th class="p-3">${esc(f.label)}</th>`).join('')}
                 <th class="p-3 text-right">Aksi</th>
               </tr>
             </thead>
-            <tbody id="rows" class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-200"></tbody>
+            <tbody id="rows" class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-800 dark:text-slate-100"></tbody>
           </table>
         </div>
       </div>
     `);
     function drawRows() {
       const q = table.querySelector('#s').value.toLowerCase();
-      table.querySelector('#rows').innerHTML = list.filter(x => x.regNo.toLowerCase().includes(q) || (x.data.nama||'').toLowerCase().includes(q)).map(s => `
-        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 ${s.withdrawn ? 'opacity-60' : ''}">
-          <td class="p-3 font-mono font-bold text-sky-600 dark:text-sky-400">${s.regNo}</td>
-          <td class="p-3 font-bold">${esc(s.data.nama||'-')}</td>
-          <td class="p-3 text-xs text-slate-500">${esc(s.year||'-')}</td>
+      table.querySelector('#rows').innerHTML = getFilteredSubs().filter(x => x.regNo.toLowerCase().includes(q) || (x.data.nama||'').toLowerCase().includes(q)).map(s => `
+        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 ${s.withdrawn ? 'bg-rose-50 dark:bg-rose-500/10' : ''}">
+          <td class="p-3 font-mono font-bold text-sky-700 dark:text-sky-300">${s.regNo}</td>
+          <td class="p-3 font-bold text-slate-900 dark:text-white">${esc(s.data.nama||'-')}</td>
+          <td class="p-3 text-sm text-slate-700 dark:text-slate-300">${esc(s.year||'-')}</td>
           <td class="p-3">${s.withdrawn
             ? `<span class="px-2 py-1 rounded text-xs font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400">Cabut Berkas/Keluar</span>`
             : `<span class="px-2 py-1 rounded text-xs font-bold ${s.verified?'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400':'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'}">${s.verified?'Terverifikasi':'Pending'}</span>`}</td>
           ${extraFields.map(f => {
             if (f.type === 'checkbox') {
               const checked = s.data[f.id] === true || s.data[f.id] === 'true';
-              return `<td class="p-3"><button data-id="${s.id}" data-toggle="${f.id}" class="text-xs px-2 py-1 rounded font-bold ${checked?'bg-teal-500 text-white':'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'}">${checked?'✓ Ya':'Belum'}</button></td>`;
+              return `<td class="p-3"><button data-id="${s.id}" data-toggle="${f.id}" class="text-xs px-2.5 py-1.5 rounded font-bold ${checked?'bg-teal-600 text-white':'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100'}">${checked?'✓ Ya':'Belum'}</button></td>`;
             }
-            return `<td class="p-3 text-xs">${esc(s.data[f.id]||'-')}</td>`;
+            return `<td class="p-3 text-sm text-slate-800 dark:text-slate-100">${esc(s.data[f.id]||'-')}</td>`;
           }).join('')}
           <td class="p-3 text-right space-x-2 whitespace-nowrap">
-            <button data-id="${s.id}" data-act="e" class="text-xs px-2 py-1 bg-slate-200 dark:bg-slate-700 rounded font-bold">Edit</button>
-            <button data-id="${s.id}" data-act="v" class="text-xs px-2 py-1 ${s.verified?'bg-slate-200 dark:bg-slate-700':'bg-emerald-500 text-white'} rounded font-bold">${s.verified?'Batal':'Verify'}</button>
-            <button data-id="${s.id}" data-act="w" class="text-xs px-2 py-1 ${s.withdrawn?'bg-slate-200 dark:bg-slate-700':'bg-rose-500 text-white'} rounded font-bold">${s.withdrawn?'Aktifkan Kembali':'Cabut Berkas/Keluar'}</button>
+            <button data-id="${s.id}" data-act="e" class="text-xs px-2.5 py-1.5 bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded font-bold">Edit</button>
+            <button data-id="${s.id}" data-act="v" class="text-xs px-2.5 py-1.5 ${s.verified?'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100':'bg-emerald-600 text-white'} rounded font-bold">${s.verified?'Batal':'Verify'}</button>
+            <button data-id="${s.id}" data-act="w" class="text-xs px-2.5 py-1.5 ${s.withdrawn?'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100':'bg-rose-600 text-white'} rounded font-bold">${s.withdrawn?'Aktifkan Kembali':'Cabut Berkas/Keluar'}</button>
+            <button data-id="${s.id}" data-act="d" class="text-xs px-2.5 py-1.5 border-2 border-rose-600 text-rose-700 dark:text-rose-300 dark:border-rose-400 rounded font-bold">Hapus</button>
           </td>
         </tr>
       `).join('');
     }
     table.querySelector('#s').oninput = drawRows;
-    table.onclick = e => {
+    table.onclick = async e => {
       const b = e.target.closest('button'); if(!b) return;
-      const entry = list.find(x=>x.id===b.dataset.id);
-      if(b.dataset.act==='e') openForm(entry);
-      if(b.dataset.act==='v') { DB.updateSubmission(b.dataset.id, {verified: !entry.verified}); drawRows(); drawStats(); }
-      if(b.dataset.act==='w') { DB.updateSubmission(b.dataset.id, {withdrawn: !entry.withdrawn}); drawRows(); drawStats(); }
+      const entry = DB.getSubmissions().find(x => x.id === b.dataset.id); if(!entry) return;
+      if(b.dataset.act==='e') { openForm(entry); return; }
+      const who = `<b>${esc(entry.data.nama || '-')}</b> (${esc(entry.regNo)})`;
+      if(b.dataset.act==='v') {
+        const to = !entry.verified;
+        const ok = await confirmAction(to
+          ? { title: 'Verifikasi pendaftar?', message: `Tandai ${who} sebagai <b>terverifikasi</b>.`, okLabel: 'Ya, Verifikasi', tone: 'success' }
+          : { title: 'Batalkan verifikasi?', message: `Status ${who} akan kembali menjadi <b>Pending</b>.`, okLabel: 'Ya, Batalkan', tone: 'danger' });
+        if(!ok) return;
+        DB.updateSubmission(entry.id, {verified: to}); drawRows(); drawStats();
+        toast(to ? 'Pendaftar terverifikasi' : 'Verifikasi dibatalkan', 'success');
+      }
+      if(b.dataset.act==='w') {
+        const to = !entry.withdrawn;
+        const ok = await confirmAction(to
+          ? { title: 'Cabut berkas / keluar?', message: `${who} akan ditandai <b>Cabut Berkas/Keluar</b> dan tidak lagi dihitung sebagai pendaftar aktif maupun dalam rekap fee sponsor.`, okLabel: 'Ya, Cabut Berkas', tone: 'danger' }
+          : { title: 'Aktifkan kembali pendaftar?', message: `${who} akan dihitung lagi sebagai <b>pendaftar aktif</b>.`, okLabel: 'Ya, Aktifkan', tone: 'success' });
+        if(!ok) return;
+        DB.updateSubmission(entry.id, {withdrawn: to}); drawRows(); drawStats();
+        toast(to ? 'Pendaftar ditandai cabut berkas/keluar' : 'Pendaftar diaktifkan kembali', 'success');
+      }
+      if(b.dataset.act==='d') {
+        const ok = await confirmAction({ title: 'Hapus pendaftar secara permanen?', message: `${who} akan <b>dihapus permanen</b> beserta seluruh isian formulirnya dan tidak bisa dikembalikan.<br><span class="text-xs text-slate-500 dark:text-slate-400">Jika hanya ingin mengeluarkan dari hitungan, gunakan Cabut Berkas/Keluar.</span>`, okLabel: 'Ya, Hapus Permanen', tone: 'danger' });
+        if(!ok) return;
+        if(await DB.deleteSubmission(entry.id)) { drawRows(); drawStats(); toast('Pendaftar dihapus', 'success'); }
+      }
       if(b.dataset.toggle) {
-        const fid = b.dataset.toggle;
-        const newData = { ...entry.data, [fid]: !(entry.data[fid] === true || entry.data[fid] === 'true') };
-        DB.updateSubmission(entry.id, {data: newData});
+        const fid = b.dataset.toggle, fld = schema.find(f => f.id === fid);
+        const cur = entry.data[fid] === true || entry.data[fid] === 'true';
+        const ok = await confirmAction({ title: `Ubah ${fld ? fld.label : 'status'}?`, message: `${esc(fld ? fld.label : 'Status')} untuk ${who} akan diubah menjadi <b>${cur ? 'Belum' : 'Ya'}</b>.`, okLabel: 'Ya, Ubah', tone: 'primary' });
+        if(!ok) return;
+        DB.updateSubmission(entry.id, {data: { ...entry.data, [fid]: !cur }});
         drawRows(); drawStats();
+        toast('Perubahan tersimpan', 'success');
       }
     };
     drawRows(); wrap.querySelector('#pContent').replaceChildren(table);
   }
   drawStats();
   renderList();
+  setPtab('rekap');
   document.getElementById('app').replaceChildren(wrap);
 }
 
@@ -837,7 +1030,7 @@ function viewAdmin() {
         <button id="outBtn" class="px-4 py-2 bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-xl font-bold text-sm">Keluar</button>
       </div>
       <div class="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 overflow-x-auto">
-        ${[{id:'form', l:'Form Builder'},{id:'data', l:'Data (CSV)'},{id:'guru_siswa', l:'Data Guru/Siswa'},{id:'smp', l:'Data SMP'},{id:'slideshow', l:'Slideshow'},{id:'settings', l:'Pengaturan'}].map(t => `
+        ${[{id:'form', l:'Form Builder'},{id:'data', l:'Data (CSV)'},{id:'guru_siswa', l:'Data Guru/Siswa'},{id:'fee', l:'Rekap Fee Sponsor'},{id:'smp', l:'Data SMP'},{id:'slideshow', l:'Slideshow'},{id:'settings', l:'Pengaturan'}].map(t => `
           <button data-tab="${t.id}" class="tab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap">${t.l}</button>
         `).join('')}
       </div>
@@ -856,6 +1049,7 @@ function viewAdmin() {
     if(activeTab==='form') renderFormBuilder(c);
     if(activeTab==='data') renderDataTable(c);
     if(activeTab==='guru_siswa') renderGuruSiswaAdmin(c);
+    if(activeTab==='fee') renderFeeAdmin(c);
     if(activeTab==='smp') renderSmpAdmin(c);
     if(activeTab==='slideshow') renderSlideshowAdmin(c);
     if(activeTab==='settings') renderSettings(c);
@@ -913,7 +1107,7 @@ function renderFormBuilder(container) {
             <p class="field-num-label font-bold text-slate-900 dark:text-white text-sm truncate"><span class="field-num">${i + 1}</span>. ${esc(f.label)} ${f.required ? '<span class="text-rose-500">*</span>' : ''}</p>
             <div class="flex flex-wrap gap-1.5 mt-1.5">
               <span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">${fieldTypeLabel(f.type)}</span>
-              ${f.type === 'cari' ? `<span class="px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400">Cari dari: ${esc(cariSourceLabel(f.source))}</span>` : ''}
+              ${f.type === 'cari' ? `<span class="px-2 py-0.5 rounded text-xs font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400">Cari dari: ${esc(cariSourceLabel(f.source))}${isMultiCari(f) ? ' • bisa &gt;1' : ''}</span>` : ''}
               <span class="px-2 py-0.5 rounded text-xs font-bold ${isPanitia ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400' : 'bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-400'}">${isPanitia ? 'Khusus Panitia' : 'Panitia & Pendaftar'}</span>
             </div>
           </div>
@@ -1048,6 +1242,7 @@ function renderFormBuilder(container) {
                 <option value="guru_siswa">Data Guru/Siswa (untuk tahu siapa yang membawa siswa)</option>
                 <option value="smp">Data Nama SMP (asal sekolah)</option>
               </select>
+              <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300"><input id="fMulti" type="checkbox" ${(typeof f.multi === 'boolean' ? f.multi : (f.source || 'guru_siswa') === 'guru_siswa') ? 'checked' : ''} class="rounded"> Boleh diisi lebih dari satu (mis. beberapa sponsor)</label>
               <p class="text-xs text-slate-400">Kelola isi datanya di tab "Data Guru/Siswa" / "Data SMP" pada Panel Admin.</p>
             </div>
 
@@ -1112,9 +1307,10 @@ function renderFormBuilder(container) {
         if (!options.length) { toast('Tambahkan minimal satu pilihan jawaban', 'error'); return; }
         allowOther = overlay.querySelector('#fAllowOther').checked;
       }
-      if (type === 'cari') { source = overlay.querySelector('#fSource').value; }
+      let multi = false;
+      if (type === 'cari') { source = overlay.querySelector('#fSource').value; multi = overlay.querySelector('#fMulti').checked; }
       if (type === 'heading') { desc = overlay.querySelector('#fDesc').value.trim(); }
-      const newField = { id: f.id, label, type, required, visibility, options, allowOther, source, desc };
+      const newField = { id: f.id, label, type, required, visibility, options, allowOther, source, multi, desc };
       if (isNew) schema.push(newField);
       else { const idx = schema.findIndex(x => x.id === f.id); schema[idx] = newField; }
       DB.saveSchema(schema); draw(); overlay.remove();
@@ -1206,7 +1402,7 @@ function renderDataTable(container) {
           <input type="file" id="impFile" accept=".xlsx,.xls" class="hidden">
         </div>
       </div>
-      ${subs.length ? `<div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800"><table class="w-full text-left text-xs"><thead class="bg-slate-100 dark:bg-slate-900 text-slate-500"><tr><th class="p-2">No. Pendaftaran</th><th class="p-2">Nama</th><th class="p-2">Status</th></tr></thead><tbody class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-300">${subs.map(s=>`<tr class="${s.withdrawn?'opacity-60':''}"><td class="p-2">${s.regNo}</td><td class="p-2">${esc(s.data.nama||'-')}</td><td class="p-2">${s.withdrawn?'<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400">Cabut Berkas/Keluar</span>':'<span class="text-emerald-600 dark:text-emerald-400 font-semibold">Aktif</span>'}</td></tr>`).join('')}</tbody></table></div>` : `<p class="text-slate-500">Belum ada data.</p>`}
+      ${subs.length ? `<div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800"><table class="w-full text-left text-xs"><thead class="bg-slate-100 dark:bg-slate-900 text-slate-500"><tr><th class="p-2">No. Pendaftaran</th><th class="p-2">Nama</th><th class="p-2">Status</th></tr></thead><tbody class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-300">${subs.map(s=>`<tr class="${s.withdrawn?'bg-rose-50 dark:bg-rose-500/10':''}"><td class="p-2">${s.regNo}</td><td class="p-2">${esc(s.data.nama||'-')}</td><td class="p-2">${s.withdrawn?'<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400">Cabut Berkas/Keluar</span>':'<span class="text-emerald-600 dark:text-emerald-400 font-semibold">Aktif</span>'}</td></tr>`).join('')}</tbody></table></div>` : `<p class="text-slate-500">Belum ada data.</p>`}
     </div>
   `);
 
@@ -1273,6 +1469,8 @@ function renderDataTable(container) {
 function renderGuruSiswaAdmin(container) {
   let items = JSON.parse(JSON.stringify(DB.getGuruSiswaList()));
   let query = '';
+  const sel = new Set(); // indeks item yang diceklis
+  let visIdx = [];      // indeks item yang sedang tampil (hasil pencarian)
 
   const wrap = el(`
     <div class="space-y-4">
@@ -1291,6 +1489,7 @@ function renderGuruSiswaAdmin(container) {
         <button id="syncRapor" type="button" class="px-3 py-2 bg-violet-500 text-white rounded-xl font-bold text-xs whitespace-nowrap">Sinkron dari Rapor</button>
       </div>
       <p id="syncInfo" class="text-xs text-slate-500 hidden"></p>
+      ${bulkBarHtml()}
       <div id="list" class="space-y-2"></div>
       <button id="saveAll" type="button" class="px-4 py-2 bg-emerald-500 text-white font-bold rounded-xl text-sm">Simpan Perubahan</button>
     </div>
@@ -1299,8 +1498,10 @@ function renderGuruSiswaAdmin(container) {
   function draw() {
     const q = query.toLowerCase();
     const filtered = items.map((it, i) => ({ it, i })).filter(({it}) => (it.nama||'').toLowerCase().includes(q));
+    visIdx = filtered.map(({i}) => i);
     wrap.querySelector('#list').innerHTML = filtered.length ? filtered.map(({it, i}) => `
       <div class="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col sm:flex-row sm:items-center gap-3">
+        <input type="checkbox" data-sel="${i}" ${sel.has(i)?'checked':''} aria-label="Pilih" class="w-5 h-5 rounded accent-indigo-500 flex-shrink-0 cursor-pointer self-start sm:self-center">
         ${it.src==='rapor' ? '<span title="Berasal dari sinkron Rapor; diperbarui saat sinkron berikutnya" class="px-2 py-0.5 rounded-md bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-300 text-[10px] font-bold flex-shrink-0 self-start sm:self-center">Rapor</span>' : ''}
         <input data-f="nama" data-i="${i}" type="text" value="${esc(it.nama||'')}" placeholder="Nama" class="flex-1 p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
         <select data-f="jenis" data-i="${i}" class="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
@@ -1314,10 +1515,20 @@ function renderGuruSiswaAdmin(container) {
     wrap.querySelectorAll('[data-f]').forEach(inp => {
       inp.onchange = inp.oninput = () => { items[+inp.dataset.i][inp.dataset.f] = inp.value; };
     });
-    wrap.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { items.splice(+b.dataset.del, 1); draw(); });
+    wrap.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { items.splice(+b.dataset.del, 1); sel.clear(); draw(); });
+    wrap.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => { const i = +c.dataset.sel; if (c.checked) sel.add(i); else sel.delete(i); syncBulkBar(wrap, visIdx, sel); });
+    syncBulkBar(wrap, visIdx, sel);
   }
 
-  wrap.querySelector('#q').oninput = e => { query = e.target.value; draw(); };
+  wrap.querySelector('#q').oninput = e => { query = e.target.value; sel.clear(); draw(); };
+  wrap.querySelector('#selAll').onchange = e => { visIdx.forEach(i => { if (e.target.checked) sel.add(i); else sel.delete(i); }); draw(); };
+  wrap.querySelector('#delSel').onclick = async () => {
+    const n = sel.size; if (!n) return;
+    const ok = await confirmAction({ title: `Hapus ${n} data terpilih?`, message: `<b>${n}</b> data akan dihapus dari daftar. Perubahan baru tersimpan permanen setelah Anda klik <b>Simpan Perubahan</b>.`, okLabel: `Ya, Hapus ${n} Data`, tone: 'danger' });
+    if (!ok) return;
+    items = items.filter((_, i) => !sel.has(i)); sel.clear(); draw();
+    toast(`${n} data dihapus dari daftar. Klik "Simpan Perubahan" untuk menyimpan.`, 'success');
+  };
   wrap.querySelector('#addItem').onclick = () => {
     items.push({ id: 'gs_' + Date.now(), nama: '', jenis: 'Guru', ket: '' });
     query = ''; wrap.querySelector('#q').value = ''; draw();
@@ -1342,7 +1553,7 @@ function renderGuruSiswaAdmin(container) {
       }
       if (!data || data.error) throw new Error((data && data.error) || 'Respon kosong dari server');
       cache.guruSiswa = data.items || [];
-      items = JSON.parse(JSON.stringify(cache.guruSiswa));
+      items = JSON.parse(JSON.stringify(cache.guruSiswa)); sel.clear();
       query = ''; wrap.querySelector('#q').value = '';
       draw();
       info.textContent = `Sinkron selesai (TA ${data.tahun_ajaran}): ${data.guru} guru, ${data.siswa} siswa` + (data.dilewati_duplikat ? `, ${data.dilewati_duplikat} dilewati karena sudah ada manual` : '') + '.';
@@ -1389,6 +1600,8 @@ function renderGuruSiswaAdmin(container) {
 function renderSmpAdmin(container) {
   let items = JSON.parse(JSON.stringify(DB.getSmpList()));
   let query = '';
+  const sel = new Set(); // indeks item yang diceklis
+  let visIdx = [];      // indeks item yang sedang tampil (hasil pencarian)
 
   const wrap = el(`
     <div class="space-y-4">
@@ -1405,6 +1618,7 @@ function renderSmpAdmin(container) {
         <button id="impBtn" type="button" class="px-3 py-2 bg-sky-500 text-white rounded-xl font-bold text-xs whitespace-nowrap">Import Excel</button>
         <input type="file" id="impFile" accept=".xlsx,.xls" class="hidden">
       </div>
+      ${bulkBarHtml()}
       <div id="list" class="space-y-2"></div>
       <button id="saveAll" type="button" class="px-4 py-2 bg-emerald-500 text-white font-bold rounded-xl text-sm">Simpan Perubahan</button>
     </div>
@@ -1413,8 +1627,10 @@ function renderSmpAdmin(container) {
   function draw() {
     const q = query.toLowerCase();
     const filtered = items.map((it, i) => ({ it, i })).filter(({it}) => (it.nama||'').toLowerCase().includes(q));
+    visIdx = filtered.map(({i}) => i);
     wrap.querySelector('#list').innerHTML = filtered.length ? filtered.map(({it, i}) => `
       <div class="p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col sm:flex-row sm:items-center gap-3">
+        <input type="checkbox" data-sel="${i}" ${sel.has(i)?'checked':''} aria-label="Pilih" class="w-5 h-5 rounded accent-indigo-500 flex-shrink-0 cursor-pointer self-start sm:self-center">
         <input data-f="nama" data-i="${i}" type="text" value="${esc(it.nama||'')}" placeholder="Nama SMP" class="flex-1 p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
         <button data-del="${i}" type="button" class="px-3 py-1.5 bg-rose-100 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 rounded-lg font-bold text-xs flex-shrink-0">Hapus</button>
       </div>`).join('') : `<p class="text-sm text-slate-500">${items.length ? 'Tidak ada data yang cocok.' : 'Belum ada data. Klik "+ Tambah SMP" untuk menambahkan.'}</p>`;
@@ -1422,10 +1638,20 @@ function renderSmpAdmin(container) {
     wrap.querySelectorAll('[data-f]').forEach(inp => {
       inp.onchange = inp.oninput = () => { items[+inp.dataset.i][inp.dataset.f] = inp.value; };
     });
-    wrap.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { items.splice(+b.dataset.del, 1); draw(); });
+    wrap.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { items.splice(+b.dataset.del, 1); sel.clear(); draw(); });
+    wrap.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => { const i = +c.dataset.sel; if (c.checked) sel.add(i); else sel.delete(i); syncBulkBar(wrap, visIdx, sel); });
+    syncBulkBar(wrap, visIdx, sel);
   }
 
-  wrap.querySelector('#q').oninput = e => { query = e.target.value; draw(); };
+  wrap.querySelector('#q').oninput = e => { query = e.target.value; sel.clear(); draw(); };
+  wrap.querySelector('#selAll').onchange = e => { visIdx.forEach(i => { if (e.target.checked) sel.add(i); else sel.delete(i); }); draw(); };
+  wrap.querySelector('#delSel').onclick = async () => {
+    const n = sel.size; if (!n) return;
+    const ok = await confirmAction({ title: `Hapus ${n} data terpilih?`, message: `<b>${n}</b> data akan dihapus dari daftar. Perubahan baru tersimpan permanen setelah Anda klik <b>Simpan Perubahan</b>.`, okLabel: `Ya, Hapus ${n} Data`, tone: 'danger' });
+    if (!ok) return;
+    items = items.filter((_, i) => !sel.has(i)); sel.clear(); draw();
+    toast(`${n} data dihapus dari daftar. Klik "Simpan Perubahan" untuk menyimpan.`, 'success');
+  };
   wrap.querySelector('#addItem').onclick = () => {
     items.push({ id: 'smp_' + Date.now(), nama: '' });
     query = ''; wrap.querySelector('#q').value = ''; draw();
@@ -1462,6 +1688,59 @@ function renderSmpAdmin(container) {
   };
 
   draw(); container.replaceChildren(wrap);
+}
+
+// ==== Kop dokumen (gambar PNG) untuk semua rekap/cetak ====
+// Baca file gambar kop, kecilkan lebar maksimum 1600px, simpan sebagai PNG (transparansi tetap terjaga).
+function resizeKopFile(file, maxW = 1600) {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) { reject(new Error('File harus berupa gambar (PNG)')); return; }
+    if (file.size > 5 * 1024 * 1024) { reject(new Error('Ukuran file terlalu besar (maks. 5 MB)')); return; }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Gagal membaca file'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('File bukan gambar yang valid'));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxW) { height = Math.round(height * (maxW / width)); width = maxW; }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+// CSS kop untuk dokumen cetak (dipakai semua rekap yang dicetak)
+const KOP_CSS = `
+  .kop { display: flex; align-items: center; gap: 14px; border-bottom: 3px double #000; padding-bottom: 10px; margin-bottom: 14px; }
+  .kop .lg { width: 84px; flex: 0 0 84px; text-align: center; }
+  .kop .lg img { max-width: 84px; max-height: 84px; object-fit: contain; }
+  .kop .tt { flex: 1; text-align: center; }
+  .kop .sk { font-size: 13pt; font-weight: bold; text-transform: uppercase; }
+  .kop h1 { font-size: 15pt; margin: 4px 0 2px; text-transform: uppercase; }
+  .kop .sub { margin: 0; }
+  .kopimg { margin-bottom: 10px; text-align: center; }
+  .kopimg img { display: block; width: 100%; height: auto; max-height: 40mm; object-fit: contain; }
+  .doctitle { text-align: center; margin: 4px 0 14px; }
+  .doctitle h1 { font-size: 14pt; margin: 0 0 2px; text-transform: uppercase; }
+  .doctitle .sub { margin: 0; }
+`;
+// Header dokumen: pakai gambar kop jika sudah diupload di Pengaturan, jika belum pakai kop teks + logo seperti sebelumnya
+function kopHeaderHtml(title, sub) {
+  const st = DB.getSettings(), kop = DB.getKop();
+  if (kop) {
+    return `<div class="kopimg"><img src="${esc(kop)}" alt="Kop"></div>
+<div class="doctitle"><h1>${esc(title)}</h1>${sub ? `<p class="sub">${esc(sub)}</p>` : ''}</div>`;
+  }
+  return `<div class="kop">
+  ${st.logo ? `<div class="lg"><img src="${esc(st.logo)}" alt="Logo"></div>` : ''}
+  <div class="tt"><div class="sk">${esc(st.schoolName)}</div><h1>${esc(title)}</h1>${sub ? `<p class="sub">${esc(sub)}</p>` : ''}</div>
+  ${st.logo ? `<div class="lg"></div>` : ''}
+</div>`;
 }
 
 function resizeImageFile(file, maxDim = 320) {
@@ -1563,12 +1842,249 @@ function renderSlideshowAdmin(container) {
   container.replaceChildren(wrap);
 }
 
+// ===== Rekap Fee Sponsor =====
+// Aturan: fee per pendaftar (default Rp100.000, bisa diubah per pendaftar). Sponsor 1 = penuh.
+// Hanya guru / hanya siswa = bagi rata. Campuran = porsi guru (%) dibagi rata antar guru, sisanya dibagi rata antar siswa.
+function feeDefaults() { return { defaultFee: 100000, pctGuru: 50, pctSiswa: 50, unknownAs: 'Siswa', ttdKepsek: '', ttdBendahara: '', ttdKota: '', overrides: {} }; }
+function rp(n) { return 'Rp ' + Math.round(n || 0).toLocaleString('id-ID'); }
+function splitEven(total, n) {
+  const base = Math.floor(total / n), rem = total - base * n;
+  return Array.from({ length: n }, (_, i) => base + (i < rem ? 1 : 0)); // sisa rupiah dibagikan ke yang pertama agar total pas
+}
+function feeJenisLookup() {
+  const m = new Map();
+  DB.getGuruSiswaList().forEach(it => {
+    const k = String(it.nama || '').trim().toLowerCase();
+    if (k && !m.has(k)) m.set(k, { jenis: String(it.jenis || '').toLowerCase().startsWith('sis') ? 'Siswa' : 'Guru', ket: String(it.ket || '').trim() });
+  });
+  return m;
+}
+function feeComputeShares(fee, sponsors, cfg) {
+  const g = sponsors.filter(x => x.jenis === 'Guru'), s = sponsors.filter(x => x.jenis === 'Siswa');
+  let poolG = 0, poolS = 0;
+  if (g.length && s.length) { poolG = Math.round(fee * cfg.pctGuru / 100); poolS = fee - poolG; }
+  else if (g.length) poolG = fee;
+  else if (s.length) poolS = fee;
+  const gAmt = g.length ? splitEven(poolG, g.length) : [], sAmt = s.length ? splitEven(poolS, s.length) : [];
+  let gi = 0, si = 0;
+  return sponsors.map(x => ({ ...x, amount: x.jenis === 'Guru' ? gAmt[gi++] : sAmt[si++] }));
+}
+function feeCompute(year) {
+  const cfg = DB.getFeeConfig(), schema = DB.getSchema();
+  const fields = schema.filter(f => f.type === 'cari' && f.source === 'guru_siswa');
+  const lookup = feeJenisLookup();
+  const subs = DB.getSubmissions()
+    .filter(s => !s.withdrawn && (year === 'ALL' || s.year === year))
+    .slice().sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const rows = subs.map(s => {
+    const fee = (s.id in cfg.overrides) ? cfg.overrides[s.id] : cfg.defaultFee;
+    const seen = new Set(), sponsors = [];
+    fields.forEach(f => splitMulti(s.data ? s.data[f.id] : '').forEach(nama => {
+      const k = nama.toLowerCase();
+      if (seen.has(k)) return; seen.add(k);
+      const info = lookup.get(k);
+      sponsors.push({ nama, jenis: info ? info.jenis : cfg.unknownAs, registered: !!info, ket: info ? info.ket : '' });
+    }));
+    return { s, fee, custom: (s.id in cfg.overrides), shares: feeComputeShares(fee, sponsors, cfg) };
+  });
+  const map = new Map();
+  rows.forEach(r => r.shares.forEach(sh => {
+    const k = sh.nama.toLowerCase();
+    if (!map.has(k)) map.set(k, { nama: sh.nama, jenis: sh.jenis, registered: sh.registered, ket: sh.ket || '', total: 0, items: [] });
+    const e = map.get(k); e.total += sh.amount; e.items.push({ s: r.s, amount: sh.amount, n: r.shares.length });
+  }));
+  const sponsors = Array.from(map.values()).sort((a, b) => b.total - a.total || a.nama.localeCompare(b.nama));
+  const totalFee = rows.reduce((a, r) => a + r.fee, 0);
+  const noSponsor = rows.filter(r => !r.shares.length);
+  return { cfg, fields, rows, sponsors, totalFee, noSponsor,
+    noSponsorFee: noSponsor.reduce((a, r) => a + r.fee, 0),
+    distributed: sponsors.reduce((a, x) => a + x.total, 0) };
+}
+function feeSponsorRows(c) {
+  const rows = c.sponsors.map((x, i) => [i + 1, x.nama, x.jenis + (x.registered ? '' : ' (belum di Data Guru/Siswa)'), x.items.length, x.total,
+    x.items.map(it => `${it.s.regNo} ${it.s.data.nama || '-'}: ${it.amount}`).join('; ')]);
+  rows.push(['', 'TOTAL', '', c.sponsors.reduce((a, x) => a + x.items.length, 0), c.distributed, '']);
+  return [['No', 'Nama Sponsor', 'Jenis', 'Jumlah Pendaftar', 'Total Fee (Rp)', 'Rincian Pendaftar'], ...rows];
+}
+function feeDetailRows(c) {
+  const rows = c.rows.map((r, i) => [i + 1, r.s.regNo || '', r.s.data.nama || '', r.s.year || '', r.fee,
+    r.shares.map(x => x.nama + ' (' + x.jenis + ')').join('; ') || 'Tanpa sponsor',
+    r.shares.map(x => `${x.nama}: ${x.amount}`).join('; ')]);
+  rows.push(['', '', '', 'TOTAL', c.totalFee, '', '']);
+  return [['No', 'No. Pendaftaran', 'Nama Pendaftar', 'Tahun Ajaran', 'Fee (Rp)', 'Sponsor', 'Pembagian (Rp)'], ...rows];
+}
+
+function renderFeeAdmin(container) {
+  const inp = 'w-full p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm';
+  const cfg0 = DB.getFeeConfig(), years = DB.getYears();
+  let year = String(DB.getSettings().year || 'ALL'), view = 'sponsor', q = '';
+
+  const wrap = el(`
+    <div class="space-y-6">
+      <div>
+        <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">Rekapitulasi Fee Sponsor</h3>
+        <p class="text-xs text-slate-500 mt-1">Pendaftar yang cabut berkas/keluar tidak dihitung. Jenis sponsor (Guru/Siswa) diambil dari tab Data Guru/Siswa.</p>
+      </div>
+      <div class="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+          <div><label class="text-xs font-bold text-slate-500 block mb-1">Fee Default per Pendaftar (Rp)</label><input id="cfFee" type="number" min="0" step="1000" value="${cfg0.defaultFee}" class="${inp}"></div>
+          <div><label class="text-xs font-bold text-slate-500 block mb-1">Porsi Guru (%)</label><input id="cfG" type="number" min="0" max="100" step="any" value="${cfg0.pctGuru}" class="${inp}"></div>
+          <div><label class="text-xs font-bold text-slate-500 block mb-1">Porsi Siswa (%)</label><input id="cfS" type="number" min="0" max="100" step="any" value="${cfg0.pctSiswa}" class="${inp}"></div>
+          <div><label class="text-xs font-bold text-slate-500 block mb-1">Sponsor di luar Data Guru/Siswa dianggap</label>
+            <select id="cfU" class="${inp}"><option value="Siswa" ${cfg0.unknownAs === 'Siswa' ? 'selected' : ''}>Siswa</option><option value="Guru" ${cfg0.unknownAs === 'Guru' ? 'selected' : ''}>Guru</option></select></div>
+          <button id="cfSave" class="px-4 py-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white font-bold text-sm">Simpan Pengaturan</button>
+        </div>
+        <p class="text-xs text-slate-600 dark:text-slate-300 pt-2 border-t border-slate-200 dark:border-slate-800">Penandatangan daftar cetak &mdash; Kepala Sekolah: <b>${esc(cfg0.ttdKepsek) || '<i>belum diisi</i>'}</b> &middot; Bendahara: <b>${esc(cfg0.ttdBendahara) || '<i>belum diisi</i>'}</b>. Ubah di menu <b>Pengaturan</b>.</p>
+        <p class="text-xs text-slate-400">Porsi guru/siswa berlaku bila satu pendaftar punya sponsor guru <b>dan</b> siswa sekaligus. Jika semuanya guru atau semuanya siswa, fee dibagi rata. Pendaftar tanpa nilai khusus mengikuti fee default.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <select id="feeYear" class="${inp} !w-auto font-bold">
+          <option value="ALL">Semua Tahun Ajaran</option>
+          ${years.map(y => `<option value="${esc(y)}" ${String(y) === year ? 'selected' : ''}>Tahun Ajaran ${esc(y)}${String(y) === String(DB.getSettings().year) ? ' (Aktif)' : ''}</option>`).join('')}
+        </select>
+        <button data-v="sponsor" class="feeV px-4 py-2 rounded-xl font-bold text-sm">Rekap per Sponsor</button>
+        <button data-v="detail" class="feeV px-4 py-2 rounded-xl font-bold text-sm">Rincian per Pendaftar</button>
+        <button id="feePrint" class="ml-auto px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-sm">Cetak Daftar Penerimaan</button>
+        <button id="feeXls" class="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm">Download Excel</button>
+      </div>
+      <div id="feeSum" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+      <div id="feeBody"></div>
+    </div>
+  `);
+
+  const $ = s => wrap.querySelector(s);
+  // Persentase guru & siswa selalu berjumlah 100
+  $('#cfG').oninput = e => { const v = Number(e.target.value); if (v >= 0 && v <= 100) $('#cfS').value = Math.round((100 - v) * 100) / 100; };
+  $('#cfS').oninput = e => { const v = Number(e.target.value); if (v >= 0 && v <= 100) $('#cfG').value = Math.round((100 - v) * 100) / 100; };
+  $('#cfSave').onclick = () => {
+    const fee = Math.round(Number($('#cfFee').value)), g = Number($('#cfG').value);
+    if (!(fee >= 0)) { toast('Fee default tidak valid', 'error'); return; }
+    if (!(g >= 0 && g <= 100)) { toast('Porsi guru harus 0–100%', 'error'); return; }
+    DB.saveFeeConfig({ ...DB.getFeeConfig(), defaultFee: fee, pctGuru: g, pctSiswa: Math.round((100 - g) * 100) / 100, unknownAs: $('#cfU').value });
+    toast('Pengaturan fee tersimpan', 'success'); draw();
+  };
+  $('#feeYear').onchange = e => { year = e.target.value; draw(); };
+  wrap.querySelectorAll('.feeV').forEach(b => b.onclick = () => { view = b.dataset.v; draw(); });
+  $('#feeXls').onclick = () => {
+    const c = feeCompute(year), tag = year === 'ALL' ? 'Semua' : year.replace(/[\/\\]/g, '-');
+    if (view === 'sponsor') buildAndDownloadXlsx(feeSponsorRows(c), 'Rekap Fee Sponsor', `Rekap_Fee_Sponsor_${tag}.xlsx`);
+    else buildAndDownloadXlsx(feeDetailRows(c), 'Rincian Fee', `Rincian_Fee_Pendaftar_${tag}.xlsx`);
+  };
+
+  // Daftar penerimaan fee SPMB (untuk tanda tangan penerima): No, Nama, Kelas (siswa), Nominal, Paraf + TTD Kepala Sekolah & Bendahara
+  $('#feePrint').onclick = () => {
+    const c = feeCompute(year), cf = c.cfg, st = DB.getSettings();
+    const list = c.sponsors.filter(x => x.total > 0).slice().sort((a, b) => a.nama.localeCompare(b.nama, 'id'));
+    if (!list.length) { toast('Belum ada sponsor yang menerima fee pada tahun ajaran ini', 'error'); return; }
+    const ta = year === 'ALL' ? 'Semua Tahun Ajaran' : 'Tahun Ajaran ' + year;
+    const tgl = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+    const total = list.reduce((a, x) => a + x.total, 0);
+    const rows = list.map((x, i) => `<tr><td class="c">${i + 1}</td><td>${esc(x.nama)}</td><td class="c">${x.jenis === 'Siswa' ? esc(x.ket || '') : ''}</td><td class="r">${rp(x.total)}</td><td></td></tr>`).join('');
+    const nm = v => v ? `<b><u>${esc(v)}</u></b>` : '( ................................ )';
+    const html = `<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><title>Daftar Penerimaan Fee SPMB ${esc(ta)}</title>
+<style>
+  @page { size: A4 portrait; margin: 18mm 15mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Times New Roman", Times, serif; color: #000; font-size: 12pt; margin: 0; padding: 16px; }
+  .bar { text-align: right; margin-bottom: 12px; font-family: Arial, sans-serif; }
+  .bar button { padding: 8px 18px; font-size: 14px; font-weight: bold; cursor: pointer; }
+  ${KOP_CSS}
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #000; padding: 6px 8px; }
+  th { background: #eee; text-align: center; }
+  thead { display: table-header-group; }
+  tbody tr { height: 34px; page-break-inside: avoid; }
+  td.c { text-align: center; } td.r { text-align: right; white-space: nowrap; }
+  tfoot td { font-weight: bold; }
+  .sig { display: flex; justify-content: space-between; margin-top: 28px; page-break-inside: avoid; }
+  .sig > div { width: 45%; text-align: center; }
+  .sig .sp { height: 80px; }
+  @media print { .bar { display: none; } body { padding: 0; } }
+</style></head><body>
+<div class="bar"><button onclick="window.print()">Cetak / Simpan PDF</button></div>
+${kopHeaderHtml('Daftar Penerimaan Fee SPMB', ta)}
+<table>
+  <thead><tr><th style="width:6%">No</th><th>Nama</th><th style="width:16%">Kelas</th><th style="width:22%">Nominal Diterima</th><th style="width:18%">Paraf</th></tr></thead>
+  <tbody>${rows}</tbody>
+  <tfoot><tr><td colspan="3" style="text-align:center">Total</td><td class="r">${rp(total)}</td><td></td></tr></tfoot>
+</table>
+<div class="sig">
+  <div><div>Mengetahui,</div><div>Kepala Sekolah</div><div class="sp"></div><div>${nm(cf.ttdKepsek)}</div></div>
+  <div><div>${cf.ttdKota ? esc(cf.ttdKota) + ', ' : ''}${tgl}</div><div>Bendahara Sekolah</div><div class="sp"></div><div>${nm(cf.ttdBendahara)}</div></div>
+</div>
+</body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { toast('Pop-up diblokir browser. Izinkan pop-up untuk situs ini lalu coba lagi.', 'error'); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+  };
+
+  function badge(j) {
+    return `<span class="px-2 py-0.5 rounded text-xs font-bold ${j === 'Guru' ? 'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300' : 'bg-teal-100 dark:bg-teal-500/20 text-teal-700 dark:text-teal-300'}">${j}</span>`;
+  }
+  function draw() {
+    const c = feeCompute(year);
+    wrap.querySelectorAll('.feeV').forEach(b => {
+      b.className = `feeV px-4 py-2 rounded-xl font-bold text-sm ${b.dataset.v === view ? 'bg-indigo-500 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`;
+    });
+    const card = (l, v, sub) => `<div class="p-4 rounded-2xl border border-slate-200 dark:border-slate-800"><p class="text-xs font-bold uppercase text-slate-500">${l}</p><p class="font-display text-2xl font-black text-slate-900 dark:text-white mt-1">${v}</p>${sub ? `<p class="text-xs text-slate-400 mt-0.5">${sub}</p>` : ''}</div>`;
+    $('#feeSum').innerHTML =
+      card('Pendaftar Dihitung', c.rows.length) +
+      card('Total Fee', rp(c.totalFee)) +
+      card('Dibagikan ke Sponsor', rp(c.distributed), `${c.sponsors.length} sponsor`) +
+      card('Tanpa Sponsor', rp(c.noSponsorFee), `${c.noSponsor.length} pendaftar`);
+
+    const body = $('#feeBody');
+    if (!c.fields.length) { body.innerHTML = `<div class="text-center py-10 text-slate-500 text-sm">Belum ada field bertipe "Cari" dari Data Guru/Siswa di Form Builder, jadi belum ada data sponsor.</div>`; return; }
+    if (!c.rows.length) { body.innerHTML = `<div class="text-center py-10 text-slate-500 text-sm">Belum ada pendaftar pada tahun ajaran ini.</div>`; return; }
+
+    if (view === 'sponsor') {
+      if (!c.sponsors.length) { body.innerHTML = `<div class="text-center py-10 text-slate-500 text-sm">Belum ada pendaftar yang mengisi sponsor.</div>`; return; }
+      body.innerHTML = `<div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800"><table class="w-full text-left text-sm">
+        <thead class="bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 font-bold uppercase text-xs"><tr><th class="p-3">No</th><th class="p-3">Nama Sponsor</th><th class="p-3">Jenis</th><th class="p-3 text-right">Pendaftar</th><th class="p-3 text-right">Total Fee</th><th class="p-3">Rincian</th></tr></thead>
+        <tbody class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
+        ${c.sponsors.map((x, i) => `<tr class="align-top"><td class="p-3">${i + 1}</td>
+          <td class="p-3 font-bold">${esc(x.nama)}${x.registered ? '' : ' <span class="text-xs font-normal text-amber-600 dark:text-amber-400">(belum ada di Data Guru/Siswa)</span>'}</td>
+          <td class="p-3">${badge(x.jenis)}</td><td class="p-3 text-right">${x.items.length}</td>
+          <td class="p-3 text-right font-bold">${rp(x.total)}</td>
+          <td class="p-3 text-xs"><details><summary class="cursor-pointer text-sky-600 dark:text-sky-400 font-bold">Lihat</summary><ul class="mt-1 space-y-0.5">${x.items.map(it => `<li>${esc(it.s.regNo)} · ${esc(it.s.data.nama || '-')} — ${rp(it.amount)}${it.n > 1 ? ` <span class="text-slate-400">(dari ${it.n} sponsor)</span>` : ''}</li>`).join('')}</ul></details></td></tr>`).join('')}
+        </tbody>
+        <tfoot class="bg-slate-50 dark:bg-slate-900 font-bold"><tr><td class="p-3" colspan="3">TOTAL</td><td class="p-3 text-right">${c.sponsors.reduce((a, x) => a + x.items.length, 0)}</td><td class="p-3 text-right">${rp(c.distributed)}</td><td></td></tr></tfoot>
+      </table></div>`;
+    } else {
+      body.innerHTML = `<div class="space-y-3"><input id="feeQ" type="text" value="${esc(q)}" placeholder="Cari nama / no. pendaftaran..." class="${inp} sm:!w-64">
+        <div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800"><table class="w-full text-left text-sm">
+        <thead class="bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 font-bold uppercase text-xs"><tr><th class="p-3">No. Daftar</th><th class="p-3">Nama</th><th class="p-3">Fee (Rp)</th><th class="p-3">Sponsor &amp; Pembagian</th></tr></thead>
+        <tbody id="feeRows" class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-200"></tbody></table></div></div>`;
+      const drawRows = () => {
+        const t = q.toLowerCase();
+        $('#feeRows').innerHTML = c.rows.filter(r => !t || String(r.s.regNo).toLowerCase().includes(t) || String(r.s.data.nama || '').toLowerCase().includes(t)).map(r => `
+          <tr class="align-top"><td class="p-3 font-mono font-bold text-sky-600 dark:text-sky-400">${esc(r.s.regNo)}</td><td class="p-3 font-bold">${esc(r.s.data.nama || '-')}</td>
+          <td class="p-3"><input type="number" min="0" step="1000" data-fee="${r.s.id}" value="${r.fee}" title="Kosongkan untuk kembali ke fee default" class="feeIn w-32 p-1.5 rounded-lg border ${r.custom ? 'border-amber-400 bg-amber-50 dark:bg-amber-500/10' : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'} text-sm text-slate-900 dark:text-white"></td>
+          <td class="p-3 text-xs">${r.shares.length ? r.shares.map(x => `<div>${esc(x.nama)} ${badge(x.jenis)} — <b>${rp(x.amount)}</b></div>`).join('') : '<span class="text-slate-400">Tanpa sponsor</span>'}</td></tr>`).join('');
+      };
+      drawRows();
+      $('#feeQ').oninput = e => { q = e.target.value; drawRows(); };
+      $('#feeRows').onchange = e => {
+        const i = e.target.closest('.feeIn'); if (!i) return;
+        const cur = DB.getFeeConfig(), ov = { ...cur.overrides }, v = i.value.trim(), n = Math.round(Number(v));
+        if (v !== '' && !(n >= 0)) { toast('Nilai fee tidak valid', 'error'); return; }
+        if (v === '' || n === cur.defaultFee) delete ov[i.dataset.fee]; else ov[i.dataset.fee] = n;
+        DB.saveFeeConfig({ ...cur, overrides: ov }); draw();
+      };
+    }
+  }
+  draw();
+  container.replaceChildren(wrap);
+}
+
 function renderSettings(container) {
   const s = DB.getSettings();
+  const feeCfg = DB.getFeeConfig();
   let pendingLogo = s.logo || '';
+  let pendingKop = DB.getKop();
 
   const form = el(`
-    <form class="space-y-5 max-w-sm">
+    <form class="space-y-5 max-w-lg">
       <div>
         <label class="text-xs font-bold text-slate-500 block mb-1">Nama Instansi</label>
         <input type="text" id="sn" value="${esc(s.schoolName)}" class="w-full p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white">
@@ -1582,6 +2098,21 @@ function renderSettings(container) {
         <label class="text-xs font-bold text-slate-500 block mb-1">Judul Halaman Pendaftaran</label>
         <input type="text" id="sft" value="${esc(s.formTitle)}" placeholder="Contoh: Formulir Pendaftaran" class="w-full p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white">
       </div>
+      <div class="space-y-3 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+        <p class="text-sm font-bold text-slate-900 dark:text-white">Penandatangan Daftar Penerimaan Fee</p>
+        <div>
+          <label class="text-xs font-bold text-slate-500 block mb-1">Nama Kepala Sekolah</label>
+          <input type="text" id="sks" value="${esc(feeCfg.ttdKepsek)}" placeholder="Nama lengkap beserta gelar" class="w-full p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white">
+        </div>
+        <div>
+          <label class="text-xs font-bold text-slate-500 block mb-1">Nama Bendahara Sekolah</label>
+          <input type="text" id="sbd" value="${esc(feeCfg.ttdBendahara)}" placeholder="Nama lengkap beserta gelar" class="w-full p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white">
+        </div>
+        <div>
+          <label class="text-xs font-bold text-slate-500 block mb-1">Kota (untuk tanggal tanda tangan)</label>
+          <input type="text" id="skota" value="${esc(feeCfg.ttdKota)}" placeholder="Contoh: Cilacap" class="w-full p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white">
+        </div>
+      </div>
       <div>
         <label class="text-xs font-bold text-slate-500 block mb-1">Logo / Foto Sekolah</label>
         <div class="flex items-center gap-4">
@@ -1593,6 +2124,17 @@ function renderSettings(container) {
             <button type="button" id="slRemove" class="block text-xs text-rose-500 font-bold ${pendingLogo ? '' : 'hidden'}">Hapus Foto</button>
           </div>
         </div>
+      </div>
+      <div class="space-y-3 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+        <div>
+          <p class="text-sm font-bold text-slate-900 dark:text-white">Kop Dokumen (PNG)</p>
+          <p class="text-xs text-slate-400 mt-1">Gambar kop ini tampil di bagian atas semua rekap yang dicetak. Disarankan PNG lebar (mis. 2000 × 300 px, kop sudah memuat logo, nama, alamat, dan garis). Jika kosong, dipakai kop teks + logo.</p>
+        </div>
+        <div id="kopPreviewBox" class="w-full rounded-xl bg-white border border-slate-300 dark:border-slate-700 flex items-center justify-center overflow-hidden min-h-[64px]">
+          ${pendingKop ? `<img src="${pendingKop}" class="w-full h-auto">` : `<span class="text-xs text-slate-400 py-4">Belum ada kop</span>`}
+        </div>
+        <input type="file" id="skop" accept="image/png,image/*" class="text-xs text-slate-600 dark:text-slate-300 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-indigo-500 file:text-white hover:file:bg-indigo-600 file:cursor-pointer">
+        <button type="button" id="skopRemove" class="block text-xs text-rose-500 font-bold ${pendingKop ? '' : 'hidden'}">Hapus Kop</button>
       </div>
       <button type="submit" class="px-4 py-2 bg-indigo-500 text-white font-bold rounded-xl text-sm">Simpan</button>
     </form>
@@ -1615,8 +2157,25 @@ function renderSettings(container) {
     form.querySelector('#slRemove').classList.add('hidden');
   };
 
+  form.querySelector('#skop').onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      pendingKop = await resizeKopFile(file);
+      form.querySelector('#kopPreviewBox').innerHTML = `<img src="${pendingKop}" class="w-full h-auto">`;
+      form.querySelector('#skopRemove').classList.remove('hidden');
+    } catch (err) { toast(err.message || 'Gagal memuat gambar', 'error'); e.target.value = ''; }
+  };
+  form.querySelector('#skopRemove').onclick = () => {
+    pendingKop = '';
+    form.querySelector('#kopPreviewBox').innerHTML = `<span class="text-xs text-slate-400 py-4">Belum ada kop</span>`;
+    form.querySelector('#skop').value = '';
+    form.querySelector('#skopRemove').classList.add('hidden');
+  };
+
   form.onsubmit = e => {
     e.preventDefault();
+    if (pendingKop !== DB.getKop()) DB.saveKop(pendingKop);
     DB.saveSettings({
       ...s,
       schoolName: form.querySelector('#sn').value,
@@ -1624,6 +2183,10 @@ function renderSettings(container) {
       formTitle: form.querySelector('#sft').value,
       logo: pendingLogo
     });
+    DB.saveFeeConfig({ ...DB.getFeeConfig(),
+      ttdKepsek: form.querySelector('#sks').value.trim(),
+      ttdBendahara: form.querySelector('#sbd').value.trim(),
+      ttdKota: form.querySelector('#skota').value.trim() });
     updateHeader();
     toast('Pengaturan tersimpan', 'success');
   };
