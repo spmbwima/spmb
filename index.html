@@ -35,6 +35,13 @@
   body {
     font-family: 'Plus Jakarta Sans', sans-serif;
   }
+  /* Tabel dengan garis (grid) di semua sel */
+  .grid-table { border-collapse: collapse; width: 100%; }
+  .grid-table th, .grid-table td { border: 1px solid #cbd5e1; vertical-align: middle; }
+  .grid-table thead th { border-color: #94a3b8; }
+  .dark .grid-table th, .dark .grid-table td { border-color: #334155; }
+  .dark .grid-table thead th { border-color: #475569; }
+  .grid-table tbody tr:nth-child(even):not(.bg-rose-50) { background-color: rgba(148,163,184,.08); }
   
   /* Adaptive Glassmorphism Panels */
   .glass-panel {
@@ -99,12 +106,13 @@
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 </head>
 
 <body class="min-h-full flex flex-col antialiased bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-300 selection:bg-sky-500 selection:text-white">
 
 <header class="no-print sticky top-0 z-40 w-full glass-panel border-b-0">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+  <div id="hdrInner" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
     <!-- Brand Info -->
     <div class="flex items-center space-x-3 cursor-pointer group min-w-0" id="brandHomeBtn">
       <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 via-indigo-500 to-amber-400 p-0.5 shadow-lg shadow-sky-500/20 group-hover:shadow-sky-500/40 transition-all flex-shrink-0">
@@ -239,7 +247,7 @@ function toggleTheme() {
 // Local cache kept in sync with Supabase. Reads (getX) are synchronous and
 // hit this cache; writes (saveX/addX/updateX) push to Supabase and patch the
 // cache immediately so the UI stays responsive.
-const cache = { settings: null, schema: null, subs: [], guruSiswa: [], smp: [], fee: null, kop: '' };
+const cache = { settings: null, schema: null, subs: [], guruSiswa: [], smp: [], fee: null, kop: '', kepsek: [] };
 
 function mapSettingsRow(r) {
   return {
@@ -339,6 +347,13 @@ const DB = {
     supabaseClient.from('spmb_lists').upsert({ id: 'kop', items: [{ image: cache.kop }] })
       .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan kop dokumen ke server', 'error'); } });
   },
+  // Nomor WhatsApp kepala sekolah (tujuan kirim rekap oleh panitia): spmb_lists id 'kepsek' (tanpa migrasi tabel)
+  getKepsekList: () => cache.kepsek || [],
+  saveKepsekList: function(items) {
+    cache.kepsek = items;
+    supabaseClient.from('spmb_lists').upsert({ id: 'kepsek', items })
+      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan nomor WhatsApp ke server', 'error'); } });
+  },
   getSmpList: () => cache.smp || [],
   saveSmpList: function(items) {
     cache.smp = items;
@@ -376,9 +391,11 @@ async function loadFromSupabase() {
     cache.fee = (fc && Array.isArray(fc.items) && fc.items[0] && typeof fc.items[0] === 'object') ? fc.items[0] : null;
     cache.guruSiswa = (gs && Array.isArray(gs.items)) ? gs.items : [];
     cache.smp = (sm && Array.isArray(sm.items)) ? sm.items : [];
+    const ks = listsRes.data.find(r => r.id === 'kepsek');
+    cache.kepsek = (ks && Array.isArray(ks.items)) ? ks.items : [];
   } else {
     if (listsRes.error) console.warn('Tabel spmb_lists belum tersedia:', listsRes.error.message);
-    cache.guruSiswa = []; cache.smp = [];
+    cache.guruSiswa = []; cache.smp = []; cache.kepsek = [];
   }
 }
 
@@ -811,6 +828,7 @@ function viewPanitia() {
       </div>
 
       <div id="tabRekap" class="space-y-6">
+        <div class="flex justify-end"><button id="waBtn" type="button" class="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm shadow">Kirim Rekap ke WhatsApp</button></div>
         <div id="statCards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
         <div id="breakdownCards" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
       </div>
@@ -893,6 +911,93 @@ function viewPanitia() {
 
     wrap.querySelector('#breakdownCards').innerHTML = breakdownCards.join('');
   }
+
+  // ===== Kirim rekap ke WhatsApp (kepala sekolah) =====
+  // Memakai tautan wa.me: WhatsApp terbuka dengan pesan siap kirim; panitia tinggal menekan Kirim. Hanya angka rekap, tanpa data pribadi siswa.
+  function buildRekapText() {
+    const subs = getFilteredSubs(), act = subs.filter(s => !s.withdrawn);
+    const st = DB.getSettings();
+    const isYes = v => v === true || v === 'true';
+    const vCount = act.filter(s => s.verified).length;
+    const lines = [];
+    lines.push('*REKAP PENDAFTARAN SPMB*');
+    lines.push(st.schoolName || '');
+    lines.push('Tahun Ajaran: ' + (yearFilter === 'ALL' ? 'Semua Tahun Ajaran' : yearFilter));
+    lines.push('Per ' + new Date().toLocaleString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }).replace(/\./g, ':').replace(',', ' pukul') + ' WIB');
+    lines.push('');
+    lines.push('Pendaftar aktif: *' + act.length + '*');
+    lines.push('Terverifikasi: ' + vCount + ' | Belum: ' + (act.length - vCount));
+    lines.push('Cabut berkas/keluar: ' + (subs.length - act.length));
+    lines.push('Total masuk (aktif + cabut): ' + subs.length);
+    const uni = findField(['terima_seragam'], /seragam/i, ['checkbox']);
+    if (uni) { const y = act.filter(s => isYes(s.data[uni.id])).length; lines.push('Seragam: sudah terima ' + y + ' | belum ' + (act.length - y)); }
+    const addBreak = (f, title) => {
+      if (!f) return;
+      const counts = {}; (f.options || []).forEach(o => counts[o] = 0);
+      let other = 0, empty = 0;
+      act.forEach(s => { const v = s.data[f.id]; if (!v) { empty++; return; } if (v in counts) counts[v]++; else other++; });
+      lines.push(''); lines.push('*' + title + '*');
+      Object.entries(counts).forEach(([l, v]) => lines.push('- ' + l + ': ' + v));
+      if (other) lines.push('- Lainnya: ' + other);
+      if (empty) lines.push('- Belum diisi: ' + empty);
+    };
+    addBreak(findField(['gender'], /jenis\s*kelamin|gender/i, ['select']), 'Jenis Kelamin');
+    addBreak(findField(['jurusan'], /jurusan/i, ['select']), 'Pilihan Jurusan');
+    lines.push(''); lines.push('Dikirim oleh Panitia SPMB.');
+    return lines.join('\n');
+  }
+  function openWaModal() {
+    const contacts = DB.getKepsekList().filter(c => normalizeWaNumber(c.nomor));
+    const inp = 'w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500';
+    const ov = el(`
+      <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+        <div role="dialog" aria-modal="true" class="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-2xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 shadow-2xl p-6 space-y-4">
+          <div class="flex justify-between items-start gap-3">
+            <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">Kirim Rekap ke WhatsApp</h3>
+            <button id="waX" type="button" class="text-slate-500 hover:text-slate-800 dark:hover:text-white font-bold">✕</button>
+          </div>
+          <div class="space-y-2">
+            <label class="text-xs font-bold uppercase text-slate-500">Tujuan</label>
+            ${contacts.length ? `<select id="waTo" class="${inp}">
+              ${contacts.map((c, i) => `<option value="${i}">${esc(c.nama || 'Tanpa nama')} (+${normalizeWaNumber(c.nomor)})</option>`).join('')}
+              <option value="manual">Nomor lain (ketik manual)...</option></select>`
+            : `<p class="text-xs text-amber-700 dark:text-amber-400">Nomor kepala sekolah belum diisi. Minta admin menambahkannya di <b>Panel Admin → Nomor WA Kepsek</b>, atau ketik nomor di bawah.</p>`}
+            <input id="waManual" class="${inp} ${contacts.length ? 'hidden' : ''}" inputmode="tel" placeholder="Nomor WhatsApp, mis. 081234567890">
+          </div>
+          <div class="space-y-2">
+            <label class="text-xs font-bold uppercase text-slate-500">Isi pesan (boleh diedit)</label>
+            <textarea id="waText" rows="14" class="${inp} font-mono text-xs"></textarea>
+          </div>
+          <p class="text-[11px] text-slate-500">WhatsApp akan terbuka dengan pesan siap kirim; tekan tombol Kirim di WhatsApp untuk mengirimnya. Pesan hanya berisi angka rekap, tanpa data pribadi pendaftar.</p>
+          <div class="flex flex-wrap justify-end gap-2">
+            <button id="waCopy" type="button" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-sm">Salin Teks</button>
+            <button id="waSend" type="button" class="px-4 py-2 bg-emerald-500 text-white rounded-xl font-bold text-sm">Buka WhatsApp</button>
+          </div>
+        </div>
+      </div>`);
+    ov.querySelector('#waText').value = buildRekapText();
+    const close = () => ov.remove();
+    ov.querySelector('#waX').onclick = close;
+    ov.onclick = e => { if (e.target === ov) close(); };
+    const sel = ov.querySelector('#waTo'), man = ov.querySelector('#waManual');
+    if (sel) sel.onchange = () => man.classList.toggle('hidden', sel.value !== 'manual');
+    ov.querySelector('#waCopy').onclick = () => copyToClipboard(ov.querySelector('#waText').value);
+    ov.querySelector('#waSend').onclick = () => {
+      const text = ov.querySelector('#waText').value.trim();
+      if (!text) { toast('Isi pesan masih kosong', 'error'); return; }
+      let num = '';
+      if (sel && sel.value !== 'manual') num = normalizeWaNumber(contacts[Number(sel.value)].nomor);
+      else num = normalizeWaNumber(man.value);
+      if (!num) { toast('Nomor WhatsApp tujuan belum valid', 'error'); man.classList.remove('hidden'); man.focus(); return; }
+      const a = document.createElement('a');
+      a.href = 'https://wa.me/' + num + '?text=' + encodeURIComponent(text);
+      a.target = '_blank'; a.rel = 'noopener';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      close();
+    };
+    document.body.appendChild(ov);
+  }
+  wrap.querySelector('#waBtn').onclick = openWaModal;
 
   wrap.querySelector('#outBtn').onclick = () => { sessionStorage.removeItem('spmb_panitia_auth'); currentRole='siswa'; renderApp(); };
   // Tab Panel Panitia: Rekapitulasi (statistik) dan Data Pendaftar (daftar masuk) dipisah
@@ -1001,23 +1106,32 @@ function viewPanitia() {
     document.body.appendChild(ov);
   }
 
+  let pSortKey = 'created', pSortDir = -1;
   function renderList() {
-    const list = getFilteredSubs();
-    if(!list.length) return wrap.querySelector('#pContent').innerHTML = `<div class="text-center py-10 text-slate-500">Belum ada data untuk tahun ajaran ini.</div>`;
-    
     // Kolom tambahan otomatis: field bertipe select (mis. Jurusan) & checkbox (mis. Terima Seragam)
     const extraFields = schema.filter(f => f.type === 'select' || f.type === 'checkbox');
+    const thSort = (k, label) => `<th class="p-2 cursor-pointer select-none hover:text-sky-600 dark:hover:text-sky-300" data-sort="${esc(k)}">${esc(label)} <span data-arrow="${esc(k)}" class="text-sky-600 dark:text-sky-300"></span></th>`;
 
     const table = el(`
       <div class="space-y-4">
-        <div class="flex flex-col sm:flex-row gap-3"><input type="text" id="s" placeholder="Cari..." class="w-full sm:w-64 px-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-amber-500"></div>
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <input type="text" id="s" placeholder="Cari..." class="w-full sm:w-64 px-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-amber-500">
+          <div class="flex flex-wrap gap-2">
+            <button id="pExpXlsx" type="button" class="px-3 py-2 bg-emerald-500 text-white rounded-xl font-bold text-xs whitespace-nowrap">Download Excel</button>
+            <button id="pExpCsv" type="button" class="px-3 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-xs whitespace-nowrap">Download CSV</button>
+            <button id="pTpl" type="button" class="px-3 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-xs whitespace-nowrap">Unduh Template Import</button>
+            <button id="pImp" type="button" class="px-3 py-2 bg-sky-500 text-white rounded-xl font-bold text-xs whitespace-nowrap">Import Excel</button>
+            <input type="file" id="pImpFile" accept=".xlsx,.xls" class="hidden">
+          </div>
+        </div>
+        <p class="text-xs text-slate-500">Klik judul kolom untuk mengurutkan. Download Excel mengikuti filter Tahun Ajaran yang dipilih; file Excel berupa tabel yang bisa di-sort/filter. Input massal: unduh template, isi, lalu Import Excel.</p>
         <div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
-          <table class="w-full text-left text-sm">
+          <table class="grid-table text-left text-sm">
             <thead class="bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-bold uppercase text-xs">
               <tr>
-                <th class="p-3">No. Daftar</th><th class="p-3">Nama</th><th class="p-3">Th. Ajaran</th><th class="p-3">Status</th>
-                ${extraFields.map(f => `<th class="p-3">${esc(f.label)}</th>`).join('')}
-                <th class="p-3 text-right">Aksi</th>
+                ${thSort('regNo', 'No. Daftar')}${thSort('nama', 'Nama')}${thSort('year', 'Th. Ajaran')}${thSort('status', 'Status')}
+                ${extraFields.map(f => thSort('f:' + f.id, f.label)).join('')}
+                <th class="p-2 text-center">Aksi</th>
               </tr>
             </thead>
             <tbody id="rows" class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-800 dark:text-slate-100"></tbody>
@@ -1025,34 +1139,67 @@ function viewPanitia() {
         </div>
       </div>
     `);
-    function drawRows() {
+    const sortVal = (s, k) => {
+      if (k === 'regNo') return String(s.regNo || '');
+      if (k === 'nama') return String((s.data && s.data.nama) || '');
+      if (k === 'year') return String(s.year || '');
+      if (k === 'status') return s.withdrawn ? '3 Cabut' : (s.verified ? '1 Terverifikasi' : '2 Pending');
+      if (k.startsWith('f:')) { const v = s.data ? s.data[k.slice(2)] : ''; return v === true || v === 'true' ? '1' : (v === false || v === undefined || v === null || v === 'false') ? '2' : String(v); }
+      return s.createdAt ? new Date(s.createdAt).getTime() : 0;
+    };
+    function visibleSubs() {
       const q = table.querySelector('#s').value.toLowerCase();
-      table.querySelector('#rows').innerHTML = getFilteredSubs().filter(x => x.regNo.toLowerCase().includes(q) || (x.data.nama||'').toLowerCase().includes(q)).map(s => `
+      return getFilteredSubs()
+        .filter(x => String(x.regNo || '').toLowerCase().includes(q) || (x.data.nama || '').toLowerCase().includes(q))
+        .sort((x, y) => {
+          const a = sortVal(x, pSortKey), b = sortVal(y, pSortKey);
+          return (typeof a === 'number' ? a - b : String(a).localeCompare(String(b), 'id', { numeric: true, sensitivity: 'base' })) * pSortDir;
+        });
+    }
+    function drawRows() {
+      table.querySelectorAll('[data-arrow]').forEach(sp => { sp.textContent = sp.dataset.arrow === pSortKey ? (pSortDir === 1 ? '▲' : '▼') : ''; });
+      const vis = visibleSubs();
+      if (!vis.length) { table.querySelector('#rows').innerHTML = `<tr><td colspan="${5 + extraFields.length}" class="p-6 text-center text-slate-500">Belum ada data untuk tahun ajaran / pencarian ini.</td></tr>`; return; }
+      table.querySelector('#rows').innerHTML = vis.map(s => `
         <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 ${s.withdrawn ? 'bg-rose-50 dark:bg-rose-500/10' : ''}">
-          <td class="p-3 font-mono font-bold text-sky-700 dark:text-sky-300">${s.regNo}</td>
-          <td class="p-3 font-bold text-slate-900 dark:text-white">${esc(s.data.nama||'-')}</td>
-          <td class="p-3 text-sm text-slate-700 dark:text-slate-300">${esc(s.year||'-')}</td>
-          <td class="p-3">${s.withdrawn
+          <td class="p-2 font-mono font-bold text-sky-700 dark:text-sky-300 whitespace-nowrap">${s.regNo}</td>
+          <td class="p-2 font-bold text-slate-900 dark:text-white min-w-[140px]">${esc(s.data.nama||'-')}</td>
+          <td class="p-2 text-sm text-slate-700 dark:text-slate-300 whitespace-nowrap">${esc(s.year||'-')}</td>
+          <td class="p-2 whitespace-nowrap">${s.withdrawn
             ? `<span class="px-2 py-1 rounded text-xs font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400">Cabut Berkas/Keluar</span>`
             : `<span class="px-2 py-1 rounded text-xs font-bold ${s.verified?'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400':'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'}">${s.verified?'Terverifikasi':'Pending'}</span>`}</td>
           ${extraFields.map(f => {
             if (f.type === 'checkbox') {
               const checked = s.data[f.id] === true || s.data[f.id] === 'true';
-              return `<td class="p-3"><button data-id="${s.id}" data-toggle="${f.id}" class="text-xs px-2.5 py-1.5 rounded font-bold ${checked?'bg-teal-600 text-white':'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100'}">${checked?'✓ Ya':'Belum'}</button></td>`;
+              return `<td class="p-2 text-center"><button data-id="${s.id}" data-toggle="${f.id}" class="text-xs px-2 py-1 rounded font-bold ${checked?'bg-teal-600 text-white':'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100'}">${checked?'✓ Ya':'Belum'}</button></td>`;
             }
-            return `<td class="p-3 text-sm text-slate-800 dark:text-slate-100">${esc(s.data[f.id]||'-')}</td>`;
+            return `<td class="p-2 text-sm text-slate-800 dark:text-slate-100">${esc(s.data[f.id]||'-')}</td>`;
           }).join('')}
-          <td class="p-3 text-right space-x-2 whitespace-nowrap">
-            <button data-id="${s.id}" data-act="dt" class="text-xs px-2.5 py-1.5 bg-sky-600 text-white rounded font-bold">Detail</button>
-            <button data-id="${s.id}" data-act="e" class="text-xs px-2.5 py-1.5 bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded font-bold">Edit</button>
-            <button data-id="${s.id}" data-act="v" class="text-xs px-2.5 py-1.5 ${s.verified?'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100':'bg-emerald-600 text-white'} rounded font-bold">${s.verified?'Batal':'Verify'}</button>
-            <button data-id="${s.id}" data-act="w" class="text-xs px-2.5 py-1.5 ${s.withdrawn?'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100':'bg-rose-600 text-white'} rounded font-bold">${s.withdrawn?'Aktifkan Kembali':'Cabut Berkas/Keluar'}</button>
-            <button data-id="${s.id}" data-act="d" class="text-xs px-2.5 py-1.5 border-2 border-rose-600 text-rose-700 dark:text-rose-300 dark:border-rose-400 rounded font-bold">Hapus</button>
-          </td>
+          <td class="p-2 min-w-[230px]"><div class="flex flex-wrap gap-1 justify-center">
+            <button data-id="${s.id}" data-act="dt" class="text-xs px-2 py-1 bg-sky-600 text-white rounded font-bold">Detail</button>
+            <button data-id="${s.id}" data-act="e" class="text-xs px-2 py-1 bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded font-bold">Edit</button>
+            <button data-id="${s.id}" data-act="v" class="text-xs px-2 py-1 ${s.verified?'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100':'bg-emerald-600 text-white'} rounded font-bold">${s.verified?'Batal':'Verify'}</button>
+            <button data-id="${s.id}" data-act="w" class="text-xs px-2 py-1 ${s.withdrawn?'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100':'bg-rose-600 text-white'} rounded font-bold">${s.withdrawn?'Aktifkan Kembali':'Cabut Berkas/Keluar'}</button>
+            <button data-id="${s.id}" data-act="d" class="text-xs px-2 py-1 border-2 border-rose-600 text-rose-700 dark:text-rose-300 dark:border-rose-400 rounded font-bold">Hapus</button>
+          </div></td>
         </tr>
       `).join('');
     }
     table.querySelector('#s').oninput = drawRows;
+    table.querySelectorAll('[data-sort]').forEach(th => th.onclick = () => {
+      const k = th.dataset.sort;
+      if (pSortKey === k) pSortDir = -pSortDir; else { pSortKey = k; pSortDir = 1; }
+      drawRows();
+    });
+    const tagYear = () => yearFilter === 'ALL' ? 'Semua_Tahun' : yearFilter;
+    table.querySelector('#pExpXlsx').onclick = () => downloadSubmissionsExcel(visibleSubs(), tagYear());
+    table.querySelector('#pExpCsv').onclick = () => downloadSubmissionsCsv(visibleSubs(), tagYear());
+    table.querySelector('#pTpl').onclick = () => downloadImportTemplate();
+    table.querySelector('#pImp').onclick = () => table.querySelector('#pImpFile').click();
+    table.querySelector('#pImpFile').onchange = async (e) => {
+      const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+      if (await importSubmissionsFromFile(file)) { renderList(); drawStats(); }
+    };
     table.onclick = async e => {
       const b = e.target.closest('button'); if(!b) return;
       const entry = DB.getSubmissions().find(x => x.id === b.dataset.id); if(!entry) return;
@@ -1100,6 +1247,65 @@ function viewPanitia() {
   document.getElementById('app').replaceChildren(wrap);
 }
 
+// ===== WhatsApp: normalisasi nomor & Panel Admin "Nomor WA Kepsek" =====
+// 0812xxxx / 812xxxx / +62812xxxx / 62 812-xxxx  ->  62812xxxx (format wa.me). Mengembalikan '' bila tidak valid.
+function normalizeWaNumber(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.startsWith('00')) d = d.slice(2);
+  if (d.startsWith('0')) d = '62' + d.slice(1);
+  else if (d.startsWith('8')) d = '62' + d;
+  return (d.length >= 10 && d.length <= 15) ? d : '';
+}
+function renderKepsekAdmin(container) {
+  let items = JSON.parse(JSON.stringify(DB.getKepsekList()));
+  if (!items.length) items = [{ nama: 'Kepala Sekolah', nomor: '' }];
+  const inp = 'w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500';
+  const wrap = el(`
+    <div class="space-y-4 max-w-3xl">
+      <div>
+        <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">Nomor WhatsApp Kepala Sekolah</h3>
+        <p class="text-xs text-slate-500">Nomor ini muncul sebagai tujuan pada tombol <b>Kirim Rekap ke WhatsApp</b> di Panel Panitia. Boleh lebih dari satu (mis. Kepala Sekolah, Wakasek Kurikulum). Nomor pertama menjadi pilihan utama. Format bebas: 0812…, +62812…, atau 62812….</p>
+      </div>
+      <div id="kRows" class="space-y-2"></div>
+      <div class="flex flex-wrap gap-2">
+        <button id="kAdd" type="button" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-sm">+ Tambah Nomor</button>
+        <button id="kSave" type="button" class="px-4 py-2 bg-emerald-500 text-white rounded-xl font-bold text-sm">Simpan</button>
+      </div>
+    </div>
+  `);
+  function draw() {
+    wrap.querySelector('#kRows').innerHTML = items.map((it, i) => {
+      const n = normalizeWaNumber(it.nomor);
+      return `<div class="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2 items-start">
+        <input data-i="${i}" data-k="nama" class="${inp}" placeholder="Nama / Jabatan (mis. Kepala Sekolah)" value="${esc(it.nama || '')}">
+        <div><input data-i="${i}" data-k="nomor" class="${inp}" placeholder="Nomor WhatsApp, mis. 081234567890" inputmode="tel" value="${esc(it.nomor || '')}">
+          <p class="text-[11px] mt-1 ${n ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}">${n ? 'Terkirim ke: +' + n : (it.nomor ? 'Nomor belum valid' : '')}</p></div>
+        <button data-del="${i}" type="button" class="px-3 py-2 border-2 border-rose-500 text-rose-600 dark:text-rose-300 rounded-lg font-bold text-xs">Hapus</button>
+      </div>`;
+    }).join('');
+  }
+  wrap.querySelector('#kRows').oninput = e => {
+    const t = e.target; if (!t.dataset.k) return;
+    items[Number(t.dataset.i)][t.dataset.k] = t.value;
+  };
+  wrap.querySelector('#kRows').onchange = () => draw(); // perbarui keterangan validasi setelah selesai mengetik
+  wrap.querySelector('#kRows').onclick = e => {
+    const b = e.target.closest('[data-del]'); if (!b) return;
+    items.splice(Number(b.dataset.del), 1); if (!items.length) items.push({ nama: 'Kepala Sekolah', nomor: '' }); draw();
+  };
+  wrap.querySelector('#kAdd').onclick = () => { items.push({ nama: '', nomor: '' }); draw(); };
+  wrap.querySelector('#kSave').onclick = () => {
+    const clean = items.map(x => ({ nama: String(x.nama || '').trim(), nomor: String(x.nomor || '').trim() })).filter(x => x.nama || x.nomor);
+    const bad = clean.find(x => !normalizeWaNumber(x.nomor));
+    if (bad) { toast(`Nomor "${bad.nomor || '(kosong)'}" belum valid. Isi nomor WhatsApp yang benar.`, 'error'); return; }
+    items = clean.length ? clean : [{ nama: 'Kepala Sekolah', nomor: '' }];
+    DB.saveKepsekList(clean); draw();
+    toast('Nomor WhatsApp tersimpan', 'success');
+  };
+  draw(); container.replaceChildren(wrap);
+}
+
 function viewAdmin() {
   if (sessionStorage.getItem('spmb_admin_auth') !== '1') return renderLogin('admin');
   let activeTab = 'form';
@@ -1111,7 +1317,7 @@ function viewAdmin() {
         <button id="outBtn" class="px-4 py-2 bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-xl font-bold text-sm">Keluar</button>
       </div>
       <div class="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 overflow-x-auto">
-        ${[{id:'form', l:'Form Builder'},{id:'data', l:'Data (CSV)'},{id:'guru_siswa', l:'Data Guru/Siswa'},{id:'fee', l:'Rekap Fee Sponsor'},{id:'smp', l:'Data SMP'},{id:'slideshow', l:'Slideshow'},{id:'settings', l:'Pengaturan'}].map(t => `
+        ${[{id:'form', l:'Form Builder'},{id:'data', l:'Data (CSV)'},{id:'guru_siswa', l:'Data Guru/Siswa'},{id:'fee', l:'Rekap Fee Sponsor'},{id:'smp', l:'Data SMP'},{id:'kepsek', l:'Nomor WA Kepsek'},{id:'slideshow', l:'Slideshow'},{id:'settings', l:'Pengaturan'}].map(t => `
           <button data-tab="${t.id}" class="tab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap">${t.l}</button>
         `).join('')}
       </div>
@@ -1132,6 +1338,7 @@ function viewAdmin() {
     if(activeTab==='guru_siswa') renderGuruSiswaAdmin(c);
     if(activeTab==='fee') renderFeeAdmin(c);
     if(activeTab==='smp') renderSmpAdmin(c);
+    if(activeTab==='kepsek') renderKepsekAdmin(c);
     if(activeTab==='slideshow') renderSlideshowAdmin(c);
     if(activeTab==='settings') renderSettings(c);
   }
@@ -1433,11 +1640,85 @@ function styleSheetGrid(ws, rowCount, colCount) {
     }
   }
 }
-function buildAndDownloadXlsx(aoa, sheetName, filename) {
+// Unduh Excel berisi TABEL Excel asli (ada tombol filter/sort di header, baris belang-seling, lebar kolom otomatis).
+// opts: { dropdowns: {indexKolom: [pilihan...]}, notes: [[baris petunjuk]...], noteSheet: 'Petunjuk' }
+// Jika ExcelJS gagal dimuat, otomatis memakai cara lama (grid + auto-filter) agar unduhan tetap jalan.
+function buildAndDownloadXlsx(aoa, sheetName, filename, opts) {
+  opts = opts || {};
+  if (typeof ExcelJS === 'undefined') return buildAndDownloadXlsxFallback(aoa, sheetName, filename);
+  try {
+    const headers = aoa[0], body = aoa.slice(1);
+    const safeName = String(sheetName).replace(/[\\\/\?\*\[\]:]/g, ' ').slice(0, 31);
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'SPMB'; wb.created = new Date();
+    const ws = wb.addWorksheet(safeName, { views: [{ state: 'frozen', ySplit: 1 }] });
+    // Nama kolom tabel harus unik & tidak kosong
+    const seen = {};
+    const cols = headers.map((h, i) => {
+      let n = String(h === null || h === undefined || h === '' ? 'Kolom ' + (i + 1) : h).trim();
+      if (seen[n]) { seen[n]++; n = n + ' (' + seen[n] + ')'; } else seen[n] = 1;
+      return { name: n, filterButton: true };
+    });
+    // Tabel butuh minimal 1 baris data; bila kosong (template) beri 1 baris kosong
+    const rows = body.length ? body : [headers.map(() => '')];
+    ws.addTable({
+      name: 'Tabel_' + safeName.replace(/[^A-Za-z0-9]/g, '') .slice(0, 20) + '1',
+      ref: 'A1',
+      headerRow: true,
+      totalsRow: false,
+      style: { theme: 'TableStyleMedium2', showRowStripes: true },
+      columns: cols,
+      rows: rows
+    });
+    // Lebar kolom otomatis
+    headers.forEach((h, c) => {
+      let max = String(h ?? '').length + 4; // ruang tombol filter
+      body.forEach(r => { const v = r[c]; const len = (v === null || v === undefined) ? 0 : String(v).split('\n').reduce((m, x) => Math.max(m, x.length), 0); if (len > max) max = len; });
+      ws.getColumn(c + 1).width = Math.max(8, Math.min(max + 2, 50));
+    });
+    // Gaya header & garis tabel
+    const border = { style: 'thin', color: { argb: 'FFB0B0B0' } };
+    const hr = ws.getRow(1); hr.height = 26;
+    for (let r = 1; r <= rows.length + 1; r++) {
+      for (let c = 1; c <= headers.length; c++) {
+        const cell = ws.getRow(r).getCell(c);
+        cell.border = { top: border, bottom: border, left: border, right: border };
+        cell.alignment = { vertical: 'middle', wrapText: false, horizontal: r === 1 ? 'center' : 'left' };
+        if (r === 1) cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      }
+    }
+    // Dropdown pilihan (mis. Jenis Kelamin, Jurusan) pada kolom yang ditentukan, sampai baris 1000
+    Object.keys(opts.dropdowns || {}).forEach(ci => {
+      const list = (opts.dropdowns[ci] || []).filter(Boolean);
+      const joined = '"' + list.join(',') + '"';
+      if (!list.length || joined.length > 255 || list.some(x => String(x).includes(','))) return;
+      for (let r = 2; r <= 1000; r++) {
+        ws.getRow(r).getCell(Number(ci) + 1).dataValidation = { type: 'list', allowBlank: true, formulae: [joined] };
+      }
+    });
+    // Kolom berformat Teks (agar angka berawalan 0 seperti NISN/No. HP tidak hilang nolnya)
+    (opts.textCols || []).forEach(ci => { for (let r = 2; r <= 1000; r++) ws.getRow(r).getCell(Number(ci) + 1).numFmt = '@'; });
+    // Sheet petunjuk (di belakang, agar impor tetap membaca sheet pertama)
+    if (opts.notes && opts.notes.length) {
+      const ns = wb.addWorksheet(opts.noteSheet || 'Petunjuk');
+      ns.getColumn(1).width = 110;
+      opts.notes.forEach((t, i) => { const row = ns.addRow([t[0] !== undefined ? t[0] : t]); if (i === 0) row.font = { bold: true, size: 14 }; row.alignment = { wrapText: true, vertical: 'top' }; });
+    }
+    wb.xlsx.writeBuffer().then(buf => {
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }).catch(err => { console.error(err); buildAndDownloadXlsxFallback(aoa, sheetName, filename); });
+  } catch (err) { console.error(err); buildAndDownloadXlsxFallback(aoa, sheetName, filename); }
+}
+function buildAndDownloadXlsxFallback(aoa, sheetName, filename) {
   if (!xlsxReady()) return;
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   autoFitCols(ws, aoa);
   styleSheetGrid(ws, aoa.length, aoa[0].length);
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(aoa.length - 1, 0), c: aoa[0].length - 1 } }) };
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
   XLSX.writeFile(wb, filename);
@@ -1464,16 +1745,117 @@ function buildSmpRows(items) {
   return [['No', 'Nama SMP'], ...items.map((it, i) => [i + 1, it.nama || ''])];
 }
 
+// Ubah nilai sel Excel jadi teks isian; kolom tanggal dikonversi ke format YYYY-MM-DD
+function excelToFieldValue(v, type) {
+  if (v === undefined || v === null) return '';
+  if (type === 'date') {
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    if (typeof v === 'number' && v > 0) return new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000).toISOString().slice(0, 10);
+    const t = String(v).trim();
+    let m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/); // dd/mm/yyyy
+    if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    m = t.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+    if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    return t;
+  }
+  return String(v).trim();
+}
+
+// ===== Fungsi bersama Export/Import/Template pendaftar (dipakai Panel Admin & Panel Panitia) =====
+function downloadSubmissionsExcel(list, tag) {
+  if (!list.length) { toast('Belum ada data pendaftar untuk diunduh', 'error'); return; }
+  buildAndDownloadXlsx(buildSubmissionRows(list, DB.getSchema()), 'Data Pendaftar', `Data_Pendaftar_SPMB_${String(tag || DB.getSettings().year).replace(/[\\\/:*?"<>|]/g, '-')}.xlsx`);
+}
+function downloadSubmissionsCsv(list, tag) {
+  if (!list.length) { toast('Belum ada data pendaftar untuk diunduh', 'error'); return; }
+  const aoa = buildSubmissionRows(list, DB.getSchema());
+  const csvEsc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const csv = "data:text/csv;charset=utf-8,\uFEFF" + aoa.map(r => r.map(csvEsc).join(',')).join('\n');
+  const l = document.createElement('a'); l.href = encodeURI(csv); l.download = `Data_Pendaftar_SPMB_${String(tag || DB.getSettings().year).replace(/[\\\/:*?"<>|]/g, '-')}.csv`;
+  document.body.appendChild(l); l.click(); document.body.removeChild(l);
+}
+function downloadImportTemplate() {
+  const fields = DB.getSchema().filter(f => f.type !== 'heading');
+  const headers = [...fields.map(f => f.label), 'Tahun (opsional)'];
+  const dropdowns = {}, textCols = [];
+  fields.forEach((f, i) => {
+    if (f.type === 'select' && !f.allowOther) dropdowns[i] = f.options || [];
+    else if (f.type === 'checkbox') dropdowns[i] = ['Ya', 'Tidak'];
+    if (f.type !== 'date') textCols.push(i);
+  });
+  const required = fields.filter(f => f.required).map(f => f.label);
+  const notes = [
+    ['PETUNJUK IMPORT PENDAFTAR'],
+    ['1. Isi data pada sheet pertama (tabel). Satu baris = satu pendaftar. Jangan mengubah / menghapus judul kolom.'],
+    ['2. Kolom wajib diisi: ' + (required.join(', ') || '-') + '. Baris dengan kolom wajib kosong akan dilewati.'],
+    ['3. Kolom bertanda pilihan (Jenis Kelamin, Jurusan, dll.) sudah ada dropdown-nya; isi persis sesuai pilihan.'],
+    ['4. Tanggal ditulis dengan format TTTT-BB-HH (contoh 2010-05-23) atau HH/BB/TTTT (contoh 23/05/2010).'],
+    ['5. Kolom centang (Ya/Tidak): isi "Ya" atau "Tidak".'],
+    ['6. "Tahun (opsional)" boleh dikosongkan; bila kosong memakai tahun ajaran aktif (' + DB.getSettings().year + ').'],
+    ['7. Nomor pendaftaran dibuat otomatis oleh sistem saat import. File hasil Download Excel juga bisa di-import ulang: baris yang No. Pendaftarannya sudah ada akan dilewati agar tidak dobel.']
+  ];
+  buildAndDownloadXlsx([headers], 'Template Import', 'Template_Import_Pendaftar.xlsx', { dropdowns, textCols, notes, noteSheet: 'Petunjuk' });
+}
+// Import file Excel -> tabel spmb_submissions. Mengembalikan true bila ada baris yang masuk.
+async function importSubmissionsFromFile(file) {
+  if (!xlsxReady()) return false;
+  try {
+    const schema = DB.getSchema(), subs = DB.getSubmissions();
+    const buf = await file.arrayBuffer();
+    const wbIn = XLSX.read(buf, { type: 'array' });
+    const wsIn = wbIn.Sheets[wbIn.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(wsIn, { defval: '', raw: true });
+    if (!rows.length) { toast('File Excel kosong atau formatnya tidak sesuai', 'error'); return false; }
+    const settings = DB.getSettings();
+    const norm = s => String(s || '').trim().toLowerCase();
+    const existingReg = new Set(subs.map(x => norm(x.regNo)));
+    const toInsert = []; let skipped = 0, dup = 0; const skippedRows = [];
+    const fields = schema.filter(f => f.type !== 'heading');
+    rows.forEach((row, idx) => {
+      const rowN = {}; Object.keys(row).forEach(k => rowN[norm(k)] = row[k]);
+      const reg = norm(rowN['no. pendaftaran']);
+      if (reg && existingReg.has(reg)) { dup++; return; }
+      const data = {};
+      fields.forEach(f => {
+        const val = rowN[norm(f.label)];
+        if (val === undefined) return;
+        if (f.type === 'checkbox') data[f.id] = /^(ya|yes|true|1)$/i.test(String(val).trim());
+        else data[f.id] = excelToFieldValue(val, f.type);
+      });
+      if (!Object.values(data).some(v => v === true || (v !== false && String(v).trim() !== ''))) return; // baris kosong
+      if (fields.some(f => f.required && f.type !== 'checkbox' && !data[f.id])) { skipped++; skippedRows.push(idx + 2); return; }
+      toInsert.push({ year: String(rowN['tahun (opsional)'] || rowN['tahun'] || settings.year).trim(), data, source: 'import' });
+    });
+    if (!toInsert.length) {
+      toast(dup ? `Semua baris sudah ada (${dup} dilewati karena No. Pendaftaran sama).` : 'Tidak ada baris valid untuk diimpor. Pastikan nama kolom sama dengan label pertanyaan di formulir & data wajib terisi.', 'error');
+      return false;
+    }
+    const { data: inserted, error } = await supabaseClient.from('spmb_submissions').insert(toInsert).select();
+    if (error) { console.error(error); toast('Gagal mengimpor ke server', 'error'); return false; }
+    const entries = (inserted || []).map(mapSubRow);
+    cache.subs.unshift(...entries);
+    const extra = [];
+    if (skipped) extra.push(`${skipped} baris dilewati karena data wajib kosong (baris Excel: ${skippedRows.slice(0, 8).join(', ')}${skippedRows.length > 8 ? ', ...' : ''})`);
+    if (dup) extra.push(`${dup} baris dilewati karena No. Pendaftaran sudah ada`);
+    toast(`${entries.length} pendaftar berhasil diimpor${extra.length ? '. ' + extra.join('; ') : ''}`, 'success');
+    return true;
+  } catch (err) {
+    console.error(err); toast('Gagal membaca file Excel. Pastikan formatnya .xlsx/.xls', 'error');
+    return false;
+  }
+}
+
 function renderDataTable(container) {
   const subs = DB.getSubmissions(), schema = DB.getSchema();
   const activeCount = subs.filter(s => !s.withdrawn).length, withdrawnCount = subs.length - activeCount;
+  let sortKey = 'created', sortDir = -1, query = '';
 
   const wrap = el(`
     <div class="space-y-4">
       <div class="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
         <div>
           <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">Data Pendaftar</h3>
-          <p class="text-xs text-slate-500">Total ${activeCount} pendaftar aktif${withdrawnCount ? ` (${withdrawnCount} cabut berkas/keluar)` : ''}. Download Excel berisi seluruh isian formulir (data lengkap), rapi dengan garis tabel &amp; lebar kolom otomatis.</p>
+          <p class="text-xs text-slate-500">Total ${activeCount} pendaftar aktif${withdrawnCount ? ` (${withdrawnCount} cabut berkas/keluar)` : ''}. Excel berupa <b>tabel</b> rapi (garis, warna header, lebar kolom otomatis) dan bisa di-<b>sort/filter</b> lewat tombol panah di judul kolom. Untuk input massal: unduh template, isi, lalu Import Excel.</p>
         </div>
         <div class="flex flex-wrap gap-2">
           <button id="expXlsx" type="button" class="px-4 py-2 bg-emerald-500 text-white rounded-xl font-bold text-sm whitespace-nowrap">Download Excel</button>
@@ -1483,64 +1865,54 @@ function renderDataTable(container) {
           <input type="file" id="impFile" accept=".xlsx,.xls" class="hidden">
         </div>
       </div>
-      ${subs.length ? `<div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800"><table class="w-full text-left text-xs"><thead class="bg-slate-100 dark:bg-slate-900 text-slate-500"><tr><th class="p-2">No. Pendaftaran</th><th class="p-2">Nama</th><th class="p-2">Status</th></tr></thead><tbody class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-300">${subs.map(s=>`<tr class="${s.withdrawn?'bg-rose-50 dark:bg-rose-500/10':''}"><td class="p-2">${s.regNo}</td><td class="p-2">${esc(s.data.nama||'-')}</td><td class="p-2">${s.withdrawn?'<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400">Cabut Berkas/Keluar</span>':'<span class="text-emerald-600 dark:text-emerald-400 font-semibold">Aktif</span>'}</td></tr>`).join('')}</tbody></table></div>` : `<p class="text-slate-500">Belum ada data.</p>`}
+      ${subs.length ? `
+      <input type="text" id="dtSearch" placeholder="Cari no. pendaftaran / nama..." class="w-full sm:w-64 px-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
+      <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800"><table class="grid-table text-left text-xs">
+        <thead class="bg-slate-100 dark:bg-slate-900 text-slate-500"><tr>
+          ${[['regNo','No. Pendaftaran'],['nama','Nama'],['year','Th. Ajaran'],['source','Sumber'],['status','Status'],['created','Tgl Daftar']].map(([k,l]) => `<th class="p-2 cursor-pointer select-none hover:text-slate-800 dark:hover:text-white" data-sort="${k}">${l} <span class="sortArrow" data-arrow="${k}"></span></th>`).join('')}
+        </tr></thead>
+        <tbody id="dtRows" class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-300"></tbody>
+      </table></div>` : `<p class="text-slate-500">Belum ada data.</p>`}
     </div>
   `);
 
-  wrap.querySelector('#expXlsx').onclick = () => {
-    if (!subs.length) { toast('Belum ada data pendaftar untuk diunduh', 'error'); return; }
-    buildAndDownloadXlsx(buildSubmissionRows(subs, schema), 'Data Pendaftar', `Data_Pendaftar_SPMB_${DB.getSettings().year}.xlsx`);
+  const srcLabel = s => s.source === 'panitia' ? 'Panitia' : s.source === 'import' ? 'Impor Excel' : 'Pendaftar';
+  const sortVal = (s, k) => {
+    if (k === 'regNo') return String(s.regNo || '');
+    if (k === 'nama') return String((s.data && s.data.nama) || '');
+    if (k === 'year') return String(s.year || '');
+    if (k === 'source') return srcLabel(s);
+    if (k === 'status') return s.withdrawn ? 'Cabut' : (s.verified ? 'Terverifikasi' : 'Belum');
+    return s.createdAt ? new Date(s.createdAt).getTime() : 0;
   };
+  function drawTbl() {
+    const body = wrap.querySelector('#dtRows'); if (!body) return;
+    const q = query.trim().toLowerCase();
+    const list = subs.filter(s => !q || String(s.regNo || '').toLowerCase().includes(q) || String((s.data && s.data.nama) || '').toLowerCase().includes(q));
+    list.sort((x, y) => {
+      const a = sortVal(x, sortKey), b = sortVal(y, sortKey);
+      return (typeof a === 'number' ? a - b : String(a).localeCompare(String(b), 'id', { numeric: true, sensitivity: 'base' })) * sortDir;
+    });
+    wrap.querySelectorAll('[data-arrow]').forEach(sp => { sp.textContent = sp.dataset.arrow === sortKey ? (sortDir === 1 ? '▲' : '▼') : ''; });
+    body.innerHTML = list.map(s => `<tr class="${s.withdrawn ? 'bg-rose-50 dark:bg-rose-500/10' : ''}"><td class="p-2">${esc(s.regNo)}</td><td class="p-2">${esc((s.data && s.data.nama) || '-')}</td><td class="p-2">${esc(s.year || '-')}</td><td class="p-2">${srcLabel(s)}</td><td class="p-2">${s.withdrawn ? '<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400">Cabut Berkas/Keluar</span>' : (s.verified ? '<span class="text-emerald-600 dark:text-emerald-400 font-semibold">Terverifikasi</span>' : '<span class="text-amber-600 dark:text-amber-400 font-semibold">Belum</span>')}</td><td class="p-2">${s.createdAt ? esc(new Date(s.createdAt).toLocaleDateString('id-ID')) : '-'}</td></tr>`).join('') || '<tr><td class="p-3 text-slate-500" colspan="6">Tidak ada hasil.</td></tr>';
+  }
+  wrap.querySelectorAll('[data-sort]').forEach(th => th.onclick = () => {
+    const k = th.dataset.sort;
+    if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = 1; }
+    drawTbl();
+  });
+  const sIn = wrap.querySelector('#dtSearch'); if (sIn) sIn.oninput = () => { query = sIn.value; drawTbl(); };
+  drawTbl();
 
-  wrap.querySelector('#expCsv').onclick = () => {
-    if (!subs.length) { toast('Belum ada data pendaftar untuk diunduh', 'error'); return; }
-    const aoa = buildSubmissionRows(subs, schema);
-    const csvEsc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const csv = "data:text/csv;charset=utf-8," + aoa.map(r => r.map(csvEsc).join(',')).join('\n');
-    const l = document.createElement('a'); l.href = encodeURI(csv); l.download = `Data_Pendaftar_SPMB_${DB.getSettings().year}.csv`;
-    document.body.appendChild(l); l.click(); document.body.removeChild(l);
-  };
+  wrap.querySelector('#expXlsx').onclick = () => downloadSubmissionsExcel(subs);
 
-  wrap.querySelector('#tplBtn').onclick = () => {
-    const headers = [...schema.filter(f => f.type !== 'heading').map(f => f.label), 'Tahun (opsional)'];
-    buildAndDownloadXlsx([headers], 'Template Import', 'Template_Import_Pendaftar.xlsx');
-  };
+  wrap.querySelector('#expCsv').onclick = () => downloadSubmissionsCsv(subs);
 
+  wrap.querySelector('#tplBtn').onclick = () => downloadImportTemplate();
   wrap.querySelector('#impBtn').onclick = () => wrap.querySelector('#impFile').click();
   wrap.querySelector('#impFile').onchange = async (e) => {
-    const file = e.target.files[0]; if (!file) return;
-    if (!xlsxReady()) { e.target.value = ''; return; }
-    try {
-      const buf = await file.arrayBuffer();
-      const wbIn = XLSX.read(buf, { type: 'array' });
-      const wsIn = wbIn.Sheets[wbIn.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(wsIn, { defval: '', raw: false });
-      if (!rows.length) { toast('File Excel kosong atau formatnya tidak sesuai', 'error'); e.target.value = ''; return; }
-      const settings = DB.getSettings();
-      const norm = s => String(s || '').trim().toLowerCase();
-      const toInsert = []; let skipped = 0;
-      rows.forEach(row => {
-        const rowN = {}; Object.keys(row).forEach(k => rowN[norm(k)] = row[k]);
-        const data = {};
-        schema.filter(f => f.type !== 'heading').forEach(f => {
-          const val = rowN[norm(f.label)];
-          if (val === undefined) return;
-          data[f.id] = f.type === 'checkbox' ? /^(ya|yes|true|1)$/i.test(String(val).trim()) : String(val).trim();
-        });
-        if (schema.some(f => f.required && !data[f.id])) { skipped++; return; }
-        toInsert.push({ year: rowN['tahun (opsional)'] || rowN['tahun'] || settings.year, data, source: 'import' });
-      });
-      if (!toInsert.length) { toast('Tidak ada baris valid untuk diimpor. Pastikan nama kolom sama dengan label pertanyaan di formulir & data wajib terisi.', 'error'); e.target.value = ''; return; }
-      const { data: inserted, error } = await supabaseClient.from('spmb_submissions').insert(toInsert).select();
-      if (error) { console.error(error); toast('Gagal mengimpor ke server', 'error'); e.target.value = ''; return; }
-      const entries = (inserted || []).map(mapSubRow);
-      cache.subs.unshift(...entries);
-      toast(`${entries.length} pendaftar berhasil diimpor${skipped ? `, ${skipped} baris dilewati (data wajib kosong)` : ''}`, 'success');
-      renderDataTable(container);
-    } catch (err) {
-      console.error(err); toast('Gagal membaca file Excel. Pastikan formatnya .xlsx/.xls', 'error');
-    }
-    e.target.value = '';
+    const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+    if (await importSubmissionsFromFile(file)) renderDataTable(container);
   };
 
   container.replaceChildren(wrap);
@@ -2332,6 +2704,10 @@ function updateHeader() {
 function renderApp() {
   if (STUDENT_ONLY) currentRole = 'siswa'; // kunci: tidak bisa pindah ke panitia/admin
   updateHeader();
+  // Panel panitia/admin memakai lebar layar penuh (tabel tidak perlu digeser); form siswa tetap rapi di tengah
+  { const wide = currentRole !== 'siswa';
+    [document.getElementById('app'), document.getElementById('hdrInner')].forEach(n => { if (!n) return; n.classList.toggle('max-w-7xl', !wide); n.classList.toggle('max-w-none', wide); });
+    const ap = document.getElementById('app'); if (ap) { ap.classList.toggle('lg:px-8', !wide); ap.classList.toggle('lg:px-6', wide); } }
   if (currentRole === 'siswa') viewSiswa();
   else if (currentRole === 'panitia') viewPanitia();
   else viewAdmin();
