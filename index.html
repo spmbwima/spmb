@@ -268,28 +268,68 @@ function mapSubRow(r) {
   return { id: r.id, regNo: r.reg_no, data: r.data || {}, source: r.source || 'siswa', verified: !!r.verified, withdrawn: !!r.withdrawn, year: r.year, createdAt: r.created_at };
 }
 
+// ===== Akses data lewat fungsi database ber-sandi (lihat setup_keamanan.sql) =====
+// Sandi hanya disimpan di sessionStorage tab ini (hilang saat tab ditutup) dan dikirim ke fungsi database untuk diverifikasi.
+function authPass(level) {
+  const a = sessionStorage.getItem('spmb_admin_pw') || '';
+  if (level === 'admin') return a;
+  return a || sessionStorage.getItem('spmb_panitia_pw') || '';
+}
+async function callRpc(fn, params) {
+  const { data, error } = await supabaseClient.rpc(fn, params);
+  if (error) throw error;
+  return data;
+}
+function rpcFail(msg, e) {
+  console.error(e);
+  const denied = e && (e.code === '42501' || /Tidak berwenang/.test(e.message || ''));
+  toast(denied ? 'Sesi login tidak valid / sandi berubah. Silakan keluar lalu masuk lagi.' : msg, 'error');
+}
+// Data privat (pendaftar, fee, kop, nomor WA) hanya dimuat setelah login panitia/admin
+async function loadPrivate() {
+  const pw = authPass('panitia');
+  if (!pw) return;
+  const [subs, priv] = await Promise.all([
+    callRpc('spmb_list_submissions', { p_pass: pw }),
+    callRpc('spmb_get_private', { p_pass: pw })
+  ]);
+  cache.subs = (subs || []).map(mapSubRow);
+  const find = id => (priv || []).find(r => r.id === id);
+  const fc = find('fee_config'), kp = find('kop'), ks = find('kepsek');
+  cache.kop = (kp && Array.isArray(kp.items) && kp.items[0] && typeof kp.items[0].image === 'string') ? kp.items[0].image : '';
+  cache.fee = (fc && Array.isArray(fc.items) && fc.items[0] && typeof fc.items[0] === 'object') ? fc.items[0] : null;
+  cache.kepsek = (ks && Array.isArray(ks.items)) ? ks.items : [];
+}
+function clearPrivate() {
+  cache.subs = []; cache.fee = null; cache.kop = ''; cache.kepsek = [];
+}
+function logoutSession(role) {
+  sessionStorage.removeItem(`spmb_${role}_auth`); sessionStorage.removeItem(`spmb_${role}_pw`);
+  if (!sessionStorage.getItem('spmb_admin_pw') && !sessionStorage.getItem('spmb_panitia_pw')) clearPrivate();
+}
+
 const DB = {
   getSettings: () => cache.settings || mapSettingsRow(null),
   saveSettings: function(s) {
     cache.settings = { ...cache.settings, ...s };
-    supabaseClient.from('spmb_settings').update({
-      school_name: s.schoolName, year: s.year, form_title: s.formTitle,
-      logo: s.logo, slides: s.slides
-    }).eq('id', 1).then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan pengaturan ke server', 'error'); } });
+    callRpc('spmb_save_settings', { p_pass: authPass('admin'), p_patch: {
+      school_name: s.schoolName, year: s.year, form_title: s.formTitle, logo: s.logo, slides: s.slides
+    } }).catch(e => rpcFail('Gagal menyimpan pengaturan ke server', e));
   },
   getSchema: () => cache.schema && cache.schema.length ? cache.schema : defaultSchema(),
   saveSchema: function(f) {
     cache.schema = f;
-    supabaseClient.from('spmb_schema').update({ fields: f }).eq('id', 1)
-      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan formulir ke server', 'error'); } });
+    callRpc('spmb_save_schema', { p_pass: authPass('admin'), p_fields: f })
+      .catch(e => rpcFail('Gagal menyimpan formulir ke server', e));
   },
   getSubmissions: () => cache.subs,
   addSubmission: async function(data, source) {
     const settings = this.getSettings();
-    const { data: row, error } = await supabaseClient.from('spmb_submissions')
-      .insert({ year: settings.year, data, source: source || 'siswa' })
-      .select().single();
-    if (error) { console.error(error); toast('Gagal mengirim pendaftaran ke server', 'error'); throw error; }
+    let row;
+    try {
+      if ((source || 'siswa') === 'siswa') row = await callRpc('spmb_submit', { p_data: data });
+      else row = (await callRpc('spmb_add_submissions', { p_pass: authPass('panitia'), p_rows: [{ year: settings.year, data, source }] }))[0];
+    } catch (error) { rpcFail('Gagal mengirim pendaftaran ke server', error); throw error; }
     const entry = mapSubRow(row);
     cache.subs.unshift(entry);
     return entry;
@@ -301,21 +341,19 @@ const DB = {
     if ('data' in patch) dbPatch.data = patch.data;
     if ('verified' in patch) dbPatch.verified = patch.verified;
     if ('withdrawn' in patch) dbPatch.withdrawn = patch.withdrawn;
-    supabaseClient.from('spmb_submissions').update(dbPatch).eq('id', id)
-      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan perubahan ke server', 'error'); } });
+    callRpc('spmb_update_submission', { p_pass: authPass('panitia'), p_id: String(id), p_patch: dbPatch })
+      .catch(e => rpcFail('Gagal menyimpan perubahan ke server', e));
     return cache.subs[i];
   },
   // Hapus permanen satu pendaftar (butuh policy DELETE di tabel spmb_submissions)
   deleteSubmission: async function(id) {
-    const { data, error } = await supabaseClient.from('spmb_submissions').delete().eq('id', id).select();
-    if (error || !data || !data.length) {
-      console.error(error || 'delete: tidak ada baris terhapus');
-      toast('Gagal menghapus di server. Pastikan policy DELETE di tabel spmb_submissions sudah ada.', 'error');
-      return false;
-    }
+    let ok = false;
+    try { ok = await callRpc('spmb_delete_submission', { p_pass: authPass('panitia'), p_id: String(id) }); }
+    catch (error) { rpcFail('Gagal menghapus di server.', error); return false; }
+    if (!ok) { toast('Gagal menghapus: data tidak ditemukan di server.', 'error'); return false; }
     cache.subs = cache.subs.filter(x => x.id !== id);
     const fc = this.getFeeConfig();
-    if (id in fc.overrides) { delete fc.overrides[id]; this.saveFeeConfig(fc); } // bersihkan fee khusus milik pendaftar ini
+    if (id in fc.overrides && authPass('admin')) { delete fc.overrides[id]; this.saveFeeConfig(fc); } // bersihkan fee khusus milik pendaftar ini
     return true;
   },
   getYears: function() {
@@ -327,70 +365,62 @@ const DB = {
   getGuruSiswaList: () => cache.guruSiswa || [],
   saveGuruSiswaList: function(items) {
     cache.guruSiswa = items;
-    supabaseClient.from('spmb_lists').upsert({ id: 'guru_siswa', items })
-      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan Data Guru/Siswa ke server', 'error'); } });
+    callRpc('spmb_save_list', { p_pass: authPass('admin'), p_id: 'guru_siswa', p_items: items })
+      .catch(e => rpcFail('Gagal menyimpan Data Guru/Siswa ke server', e));
   },
   // Data referensi Nama SMP: dipakai field bertipe "Cari" untuk standarisasi asal sekolah
   // Pengaturan & nilai fee khusus per pendaftar (rekap fee sponsor): disimpan di spmb_lists id 'fee_config' (tanpa migrasi tabel)
   getFeeConfig: () => ({ ...feeDefaults(), ...(cache.fee || {}), overrides: { ...((cache.fee && cache.fee.overrides) || {}) } }),
   saveFeeConfig: function(c) {
     cache.fee = c;
-    supabaseClient.from('spmb_lists').upsert({ id: 'fee_config', items: [c] })
-      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan pengaturan fee ke server', 'error'); } });
+    callRpc('spmb_save_list', { p_pass: authPass('admin'), p_id: 'fee_config', p_items: [c] })
+      .catch(e => rpcFail('Gagal menyimpan pengaturan fee ke server', e));
   },
   // Gambar kop dokumen (PNG) untuk semua rekap/cetak: disimpan di spmb_lists id 'kop' (tanpa migrasi tabel)
   getKop: () => cache.kop || '',
   saveKop: function(dataUrl) {
     cache.kop = dataUrl || '';
-    supabaseClient.from('spmb_lists').upsert({ id: 'kop', items: [{ image: cache.kop }] })
-      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan kop dokumen ke server', 'error'); } });
+    callRpc('spmb_save_list', { p_pass: authPass('admin'), p_id: 'kop', p_items: [{ image: cache.kop }] })
+      .catch(e => rpcFail('Gagal menyimpan kop dokumen ke server', e));
   },
   // Nomor WhatsApp kepala sekolah (tujuan kirim rekap oleh panitia): spmb_lists id 'kepsek' (tanpa migrasi tabel)
   getKepsekList: () => cache.kepsek || [],
   saveKepsekList: function(items) {
     cache.kepsek = items;
-    supabaseClient.from('spmb_lists').upsert({ id: 'kepsek', items })
-      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan nomor WhatsApp ke server', 'error'); } });
+    callRpc('spmb_save_list', { p_pass: authPass('admin'), p_id: 'kepsek', p_items: items })
+      .catch(e => rpcFail('Gagal menyimpan nomor WhatsApp ke server', e));
   },
   getSmpList: () => cache.smp || [],
   saveSmpList: function(items) {
     cache.smp = items;
-    supabaseClient.from('spmb_lists').upsert({ id: 'smp', items })
-      .then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan Data Nama SMP ke server', 'error'); } });
+    callRpc('spmb_save_list', { p_pass: authPass('admin'), p_id: 'smp', p_items: items })
+      .catch(e => rpcFail('Gagal menyimpan Data Nama SMP ke server', e));
   }
 };
 
 async function loadFromSupabase() {
-  const [setRes, schemaRes, subsRes, listsRes] = await Promise.all([
+  const [setRes, schemaRes, listsRes] = await Promise.all([
     supabaseClient.from('spmb_settings').select('*').eq('id', 1).single(),
     supabaseClient.from('spmb_schema').select('*').eq('id', 1).single(),
-    supabaseClient.from('spmb_submissions').select('*').order('created_at', { ascending: false }),
-    supabaseClient.from('spmb_lists').select('*')
+    supabaseClient.from('spmb_lists').select('*')   // hanya baris guru_siswa & smp yang boleh dibaca publik (RLS)
   ]);
-  if (setRes.error || schemaRes.error || subsRes.error) {
-    console.error(setRes.error || schemaRes.error || subsRes.error);
+  if (setRes.error || schemaRes.error) {
+    console.error(setRes.error || schemaRes.error);
     throw new Error('supabase_load_failed');
   }
   cache.settings = mapSettingsRow(setRes.data);
-  cache.subs = (subsRes.data || []).map(mapSubRow);
+  cache.subs = [];
   if (schemaRes.data && schemaRes.data.fields && schemaRes.data.fields.length) {
     cache.schema = schemaRes.data.fields;
   } else {
-    cache.schema = defaultSchema();
-    DB.saveSchema(cache.schema);
+    cache.schema = defaultSchema(); // tampil saja; tersimpan ke server saat admin pertama kali menyimpan formulir
   }
   // Tabel spmb_lists bersifat opsional (baru): jika belum dibuat di Supabase, jangan gagalkan seluruh portal.
   if (!listsRes.error && Array.isArray(listsRes.data)) {
     const gs = listsRes.data.find(r => r.id === 'guru_siswa');
     const sm = listsRes.data.find(r => r.id === 'smp');
-    const fc = listsRes.data.find(r => r.id === 'fee_config');
-    const kp = listsRes.data.find(r => r.id === 'kop');
-    cache.kop = (kp && Array.isArray(kp.items) && kp.items[0] && typeof kp.items[0].image === 'string') ? kp.items[0].image : '';
-    cache.fee = (fc && Array.isArray(fc.items) && fc.items[0] && typeof fc.items[0] === 'object') ? fc.items[0] : null;
     cache.guruSiswa = (gs && Array.isArray(gs.items)) ? gs.items : [];
     cache.smp = (sm && Array.isArray(sm.items)) ? sm.items : [];
-    const ks = listsRes.data.find(r => r.id === 'kepsek');
-    cache.kepsek = (ks && Array.isArray(ks.items)) ? ks.items : [];
   } else {
     if (listsRes.error) console.warn('Tabel spmb_lists belum tersedia:', listsRes.error.message);
     cache.guruSiswa = []; cache.smp = []; cache.kepsek = [];
@@ -997,7 +1027,7 @@ function viewPanitia() {
   }
   wrap.querySelector('#waBtn').onclick = openWaModal;
 
-  wrap.querySelector('#outBtn').onclick = () => { sessionStorage.removeItem('spmb_panitia_auth'); currentRole='siswa'; renderApp(); };
+  wrap.querySelector('#outBtn').onclick = () => { logoutSession('panitia'); currentRole='siswa'; renderApp(); };
   // Tab Panel Panitia: Rekapitulasi (statistik) dan Data Pendaftar (daftar masuk) dipisah
   let ptab = 'rekap';
   function setPtab(t) {
@@ -1323,7 +1353,7 @@ function viewAdmin() {
     </div>
   `);
 
-  wrap.querySelector('#outBtn').onclick = () => { sessionStorage.removeItem('spmb_admin_auth'); sessionStorage.removeItem('spmb_admin_pw'); currentRole='siswa'; renderApp(); };
+  wrap.querySelector('#outBtn').onclick = () => { logoutSession('admin'); currentRole='siswa'; renderApp(); };
   
   function updateTabs() {
     wrap.querySelectorAll('.tab-btn').forEach(b => {
@@ -1828,8 +1858,9 @@ async function importSubmissionsFromFile(file) {
       toast(dup ? `Semua baris sudah ada (${dup} dilewati karena No. Pendaftaran sama).` : 'Tidak ada baris valid untuk diimpor. Pastikan nama kolom sama dengan label pertanyaan di formulir & data wajib terisi.', 'error');
       return false;
     }
-    const { data: inserted, error } = await supabaseClient.from('spmb_submissions').insert(toInsert).select();
-    if (error) { console.error(error); toast('Gagal mengimpor ke server', 'error'); return false; }
+    let inserted;
+    try { inserted = await callRpc('spmb_add_submissions', { p_pass: authPass('panitia'), p_rows: toInsert }); }
+    catch (error) { rpcFail('Gagal mengimpor ke server', error); return false; }
     const entries = (inserted || []).map(mapSubRow);
     cache.subs.unshift(...entries);
     const extra = [];
@@ -2714,7 +2745,10 @@ function renderLogin(role) {
     if (error) { console.error(error); toast('Gagal menghubungi server. Pastikan setup_auth.sql sudah dijalankan.', 'error'); return; }
     if (data === true) {
       sessionStorage.setItem(`spmb_${role}_auth`, '1');
-      if (isA) sessionStorage.setItem('spmb_admin_pw', pw); // hanya untuk sesi tab ini (dipakai sinkron rapor & ganti sandi)
+      sessionStorage.setItem(`spmb_${role}_pw`, pw); // hanya untuk sesi tab ini
+      btn.disabled = true; btn.textContent = 'Memuat data...';
+      try { await loadPrivate(); }
+      catch (err) { console.error(err); logoutSession(role); btn.disabled = false; btn.textContent = 'Masuk'; toast('Gagal memuat data dari server. Pastikan setup_keamanan.sql sudah dijalankan.', 'error'); return; }
       renderApp();
     } else toast('Sandi salah!', 'error');
   };
@@ -2762,6 +2796,7 @@ if (STUDENT_ONLY) {
 initTheme();
 document.getElementById('app').innerHTML = '<div class="text-center py-20 text-slate-400 dark:text-slate-500">Memuat data dari server...</div>';
 loadFromSupabase()
+  .then(() => loadPrivate().catch(err => { console.error(err); ['admin','panitia'].forEach(logoutSession); }))
   .then(renderApp)
   .catch((err) => {
     console.error('Init error:', err);
