@@ -255,8 +255,6 @@ function mapSettingsRow(r) {
     year: r?.year ?? String(new Date().getFullYear()),
     formTitle: r?.form_title ?? 'Formulir Pendaftaran',
     logo: r?.logo ?? '',
-    adminPass: r?.admin_pass ?? 'admin123',
-    panitiaPass: r?.panitia_pass ?? 'panitia123',
     slides: (r?.slides && Array.isArray(r.slides) && r.slides.length) ? r.slides : defaultSlides()
   };
 }
@@ -276,7 +274,7 @@ const DB = {
     cache.settings = { ...cache.settings, ...s };
     supabaseClient.from('spmb_settings').update({
       school_name: s.schoolName, year: s.year, form_title: s.formTitle,
-      logo: s.logo, admin_pass: s.adminPass, panitia_pass: s.panitiaPass, slides: s.slides
+      logo: s.logo, slides: s.slides
     }).eq('id', 1).then(({error}) => { if(error){ console.error(error); toast('Gagal menyimpan pengaturan ke server', 'error'); } });
   },
   getSchema: () => cache.schema && cache.schema.length ? cache.schema : defaultSchema(),
@@ -1325,7 +1323,7 @@ function viewAdmin() {
     </div>
   `);
 
-  wrap.querySelector('#outBtn').onclick = () => { sessionStorage.removeItem('spmb_admin_auth'); currentRole='siswa'; renderApp(); };
+  wrap.querySelector('#outBtn').onclick = () => { sessionStorage.removeItem('spmb_admin_auth'); sessionStorage.removeItem('spmb_admin_pw'); currentRole='siswa'; renderApp(); };
   
   function updateTabs() {
     wrap.querySelectorAll('.tab-btn').forEach(b => {
@@ -1998,7 +1996,7 @@ function renderGuruSiswaAdmin(container) {
     btn.disabled = true; btn.textContent = 'Menyinkronkan...';
     info.classList.remove('hidden'); info.textContent = 'Mengambil data dari Rapor...';
     try {
-      const { data, error } = await supabaseClient.functions.invoke('sync-rapor', { body: { admin_pass: DB.getSettings().adminPass } });
+      const { data, error } = await supabaseClient.functions.invoke('sync-rapor', { body: { admin_pass: sessionStorage.getItem('spmb_admin_pw') || '' } });
       if (error) {
         let msg = error.message;
         try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch (_) {}
@@ -2662,7 +2660,35 @@ function renderSettings(container) {
     catch (e) { inp.select(); document.execCommand('copy'); }
     toast('Link siswa disalin', 'success');
   };
-  container.replaceChildren(linkCard, form);
+  const pwCard = el(`
+    <form class="max-w-sm mt-8 p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 space-y-3">
+      <div>
+        <p class="text-sm font-bold text-slate-900 dark:text-white">Ubah Kata Sandi</p>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Kata sandi disimpan terenkripsi (hash) di database, bukan di HTML.</p>
+      </div>
+      <select id="pwRole" class="w-full p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
+        <option value="panitia">Kata sandi Panitia</option>
+        <option value="admin">Kata sandi Admin</option>
+      </select>
+      <input type="password" id="pwCur" required autocomplete="current-password" placeholder="Kata sandi Admin saat ini" class="w-full p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
+      <input type="password" id="pwNew" required minlength="6" autocomplete="new-password" placeholder="Kata sandi baru (min. 6 karakter)" class="w-full p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
+      <input type="password" id="pwNew2" required minlength="6" autocomplete="new-password" placeholder="Ulangi kata sandi baru" class="w-full p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
+      <button type="submit" class="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white font-bold rounded-lg text-sm">Simpan Kata Sandi</button>
+    </form>
+  `);
+  pwCard.onsubmit = async e => {
+    e.preventDefault();
+    const cur = pwCard.querySelector('#pwCur').value, nw = pwCard.querySelector('#pwNew').value, nw2 = pwCard.querySelector('#pwNew2').value;
+    const role = pwCard.querySelector('#pwRole').value;
+    if (nw !== nw2) { toast('Pengulangan kata sandi baru tidak sama', 'error'); return; }
+    const { data, error } = await supabaseClient.rpc('spmb_set_password', { p_admin_pass: cur, p_role: role, p_new: nw });
+    if (error) { console.error(error); toast(error.message || 'Gagal menyimpan kata sandi', 'error'); return; }
+    if (data !== true) { toast('Kata sandi Admin saat ini salah', 'error'); return; }
+    if (role === 'admin') sessionStorage.setItem('spmb_admin_pw', nw);
+    pwCard.reset();
+    toast('Kata sandi ' + (role === 'admin' ? 'Admin' : 'Panitia') + ' diperbarui', 'success');
+  };
+  container.replaceChildren(linkCard, form, pwCard);
 }
 
 function renderLogin(role) {
@@ -2678,10 +2704,18 @@ function renderLogin(role) {
     </div>
   `);
   wrap.querySelector('#bck').onclick = () => { currentRole='siswa'; renderApp(); };
-  wrap.querySelector('#lF').onsubmit = e => {
-    e.preventDefault(); const s = DB.getSettings();
-    if (wrap.querySelector('#pw').value === (isA ? s.adminPass : s.panitiaPass)) {
-      sessionStorage.setItem(`spmb_${role}_auth`, '1'); renderApp();
+  wrap.querySelector('#lF').onsubmit = async e => {
+    e.preventDefault();
+    const btn = wrap.querySelector('button[type=submit]'), pw = wrap.querySelector('#pw').value;
+    btn.disabled = true; btn.textContent = 'Memeriksa...';
+    // Kata sandi diverifikasi di database (fungsi spmb_login); tidak ada kata sandi di HTML maupun di data yang diunduh browser.
+    const { data, error } = await supabaseClient.rpc('spmb_login', { p_role: role, p_pass: pw });
+    btn.disabled = false; btn.textContent = 'Masuk';
+    if (error) { console.error(error); toast('Gagal menghubungi server. Pastikan setup_auth.sql sudah dijalankan.', 'error'); return; }
+    if (data === true) {
+      sessionStorage.setItem(`spmb_${role}_auth`, '1');
+      if (isA) sessionStorage.setItem('spmb_admin_pw', pw); // hanya untuk sesi tab ini (dipakai sinkron rapor & ganti sandi)
+      renderApp();
     } else toast('Sandi salah!', 'error');
   };
   document.getElementById('app').replaceChildren(wrap);
