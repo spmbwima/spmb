@@ -852,7 +852,24 @@ function viewPanitia() {
 
       <div class="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 overflow-x-auto">
         <button data-ptab="rekap" class="ptab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap">Rekapitulasi</button>
+        <button data-ptab="guru" class="ptab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap">Rekap per Guru</button>
         <button data-ptab="list" class="ptab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap">Data Pendaftar</button>
+      </div>
+
+      <div id="tabGuru" class="hidden space-y-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <div>
+            <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">Rekap Siswa yang Dibawa Setiap Guru</h3>
+            <p class="text-xs text-slate-500">Dihitung dari kolom sponsor (Data Guru/Siswa) pada pendaftar aktif; yang cabut berkas/keluar tidak dihitung. Mengikuti filter Tahun Ajaran di atas.</p>
+          </div>
+          <button id="guruXls" type="button" class="ml-auto px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm shadow">Download Excel</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <input id="guruQ" type="text" placeholder="Cari nama guru / siswa..." class="w-full sm:w-64 p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm">
+          <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300"><input id="guruZero" type="checkbox" class="rounded"> Tampilkan guru yang belum membawa siswa</label>
+        </div>
+        <div id="guruCards" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
+        <div id="guruBody"></div>
       </div>
 
       <div id="tabRekap" class="space-y-6">
@@ -938,7 +955,79 @@ function viewPanitia() {
     addBreakdown(findField(['jurusan'], /jurusan/i, ['select']), 'Rekap Pilihan Jurusan');
 
     wrap.querySelector('#breakdownCards').innerHTML = breakdownCards.join('');
+    drawGuru();
   }
+
+  // ===== Rekap per Guru: berapa siswa yang dibawa setiap guru =====
+  function guruCompute() {
+    const fields = schema.filter(f => f.type === 'cari' && f.source === 'guru_siswa');
+    const lookup = feeJenisLookup();
+    const act = getFilteredSubs().filter(s => !s.withdrawn)
+      .slice().sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+    const map = new Map();
+    // Semua guru terdaftar masuk daftar (agar yang belum membawa siswa tetap terlihat)
+    DB.getGuruSiswaList().forEach(it => {
+      const nama = String(it.nama || '').trim(), k = nama.toLowerCase();
+      if (!k || String(it.jenis || '').toLowerCase().startsWith('sis') || map.has(k)) return;
+      map.set(k, { nama, ket: String(it.ket || '').trim(), registered: true, items: [] });
+    });
+    let withGuru = 0;
+    act.forEach(s => {
+      const seen = new Set();
+      fields.forEach(f => splitMulti(s.data ? s.data[f.id] : '').forEach(nama => {
+        const k = nama.toLowerCase();
+        if (seen.has(k)) return; seen.add(k);
+        const info = lookup.get(k);
+        if (info && info.jenis === 'Siswa') return; // sponsor siswa tidak masuk rekap guru
+        if (!map.has(k)) map.set(k, { nama, ket: '', registered: false, items: [] });
+        map.get(k).items.push(s);
+      }));
+      if ([...seen].some(k => { const e = map.get(k); return e && e.items.includes(s); })) withGuru++;
+    });
+    const list = Array.from(map.values()).sort((a, b) => b.items.length - a.items.length || a.nama.localeCompare(b.nama, 'id'));
+    return { fields, list, totalAktif: act.length, withGuru };
+  }
+  function guruRowsAoa(c) {
+    const rows = c.list.filter(g => g.items.length).map((g, i) => [i + 1, g.nama, g.ket, g.items.length,
+      g.items.map(s => `${s.regNo || ''} ${s.data.nama || '-'}`.trim()).join('; ')]);
+    return [['No', 'Nama Guru', 'Keterangan', 'Jumlah Siswa Dibawa', 'Daftar Siswa'], ...rows];
+  }
+  function drawGuru() {
+    const body = wrap.querySelector('#guruBody');
+    if (!body) return;
+    const c = guruCompute();
+    const zero = wrap.querySelector('#guruZero').checked, t = wrap.querySelector('#guruQ').value.trim().toLowerCase();
+    const aktifGuru = c.list.filter(g => g.items.length);
+    const totalBawa = aktifGuru.reduce((a, g) => a + g.items.length, 0);
+    const card = (l, v, n) => `<div class="glass-card rounded-2xl p-5 border-l-4 border-l-amber-500"><p class="text-xs font-bold uppercase text-slate-500">${l}</p><p class="font-display text-3xl font-black text-slate-900 dark:text-white mt-1">${v}</p>${n ? `<p class="text-xs text-slate-400 mt-0.5">${n}</p>` : ''}</div>`;
+    wrap.querySelector('#guruCards').innerHTML =
+      card('Guru Membawa Siswa', aktifGuru.length, `dari ${c.list.length} guru terdata`) +
+      card('Pendaftar Dibawa Guru', c.withGuru, `dari ${c.totalAktif} pendaftar aktif`) +
+      card('Pendaftar Tanpa Guru', c.totalAktif - c.withGuru) +
+      card('Total Hitungan', totalBawa, 'siswa yang dibawa 2+ guru dihitung di tiap guru');
+    if (!c.fields.length) { body.innerHTML = `<div class="text-center py-10 text-slate-500 text-sm">Belum ada field bertipe "Cari" dari Data Guru/Siswa di Form Builder, jadi belum ada data guru pembawa siswa.</div>`; return; }
+    const shown = c.list.filter(g => (zero || g.items.length) &&
+      (!t || g.nama.toLowerCase().includes(t) || g.items.some(s => String(s.data.nama || '').toLowerCase().includes(t))));
+    if (!shown.length) { body.innerHTML = `<div class="text-center py-10 text-slate-500 text-sm">Belum ada guru yang membawa siswa pada filter ini.</div>`; return; }
+    body.innerHTML = `<div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800"><table class="w-full text-left text-sm">
+      <thead class="bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 font-bold uppercase text-xs"><tr><th class="p-3">No</th><th class="p-3">Nama Guru</th><th class="p-3 text-right">Jumlah Siswa</th><th class="p-3">Daftar Siswa</th></tr></thead>
+      <tbody class="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
+      ${shown.map((g, i) => `<tr class="align-top"><td class="p-3">${i + 1}</td>
+        <td class="p-3 font-bold">${esc(g.nama)}${g.ket ? ` <span class="text-xs font-normal text-slate-400">${esc(g.ket)}</span>` : ''}${g.registered ? '' : ' <span class="text-xs font-normal text-amber-600 dark:text-amber-400">(belum ada di Data Guru/Siswa)</span>'}</td>
+        <td class="p-3 text-right font-black text-lg">${g.items.length}</td>
+        <td class="p-3 text-xs">${g.items.length ? `<details><summary class="cursor-pointer text-sky-600 dark:text-sky-400 font-bold">Lihat ${g.items.length} siswa</summary><ol class="mt-1 list-decimal ml-4 space-y-0.5">${g.items.map(s => `<li>${esc(s.data.nama || '-')} <span class="text-slate-400">${esc(s.regNo || '')}</span></li>`).join('')}</ol></details>` : '<span class="text-slate-400">-</span>'}</td></tr>`).join('')}
+      </tbody>
+      <tfoot class="bg-slate-50 dark:bg-slate-900 font-bold"><tr><td class="p-3" colspan="2">TOTAL</td><td class="p-3 text-right">${shown.reduce((a, g) => a + g.items.length, 0)}</td><td></td></tr></tfoot>
+    </table></div>`;
+  }
+  wrap.querySelector('#guruQ').oninput = drawGuru;
+  wrap.querySelector('#guruZero').onchange = drawGuru;
+  wrap.querySelector('#guruXls').onclick = () => {
+    const c = guruCompute();
+    if (!c.list.some(g => g.items.length)) { toast('Belum ada guru yang membawa siswa', 'error'); return; }
+    const ya = yearFilter === 'ALL' ? 'Semua' : String(yearFilter).replace(/[\/\\]/g, '-');
+    buildAndDownloadXlsx(guruRowsAoa(c), 'Rekap per Guru', `Rekap_Siswa_per_Guru_${ya}.xlsx`);
+  };
 
   // ===== Kirim rekap ke WhatsApp (kepala sekolah) =====
   // Memakai tautan wa.me: WhatsApp terbuka dengan pesan siap kirim; panitia tinggal menekan Kirim. Hanya angka rekap, tanpa data pribadi siswa.
@@ -1033,6 +1122,7 @@ function viewPanitia() {
   function setPtab(t) {
     ptab = t;
     wrap.querySelector('#tabRekap').classList.toggle('hidden', t !== 'rekap');
+    wrap.querySelector('#tabGuru').classList.toggle('hidden', t !== 'guru');
     wrap.querySelector('#tabList').classList.toggle('hidden', t !== 'list');
     wrap.querySelectorAll('.ptab-btn').forEach(b => {
       const a = b.dataset.ptab === t;
