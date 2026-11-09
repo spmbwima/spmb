@@ -862,7 +862,8 @@ function viewPanitia() {
             <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">Rekap Siswa yang Dibawa Setiap Guru</h3>
             <p class="text-xs text-slate-500">Dihitung dari kolom sponsor (Data Guru/Siswa) pada pendaftar aktif; yang cabut berkas/keluar tidak dihitung. Mengikuti filter Tahun Ajaran di atas.</p>
           </div>
-          <button id="guruXls" type="button" class="ml-auto px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm shadow">Download Excel</button>
+          <button id="guruWa" type="button" class="ml-auto px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow">Kirim ke WhatsApp</button>
+          <button id="guruXls" type="button" class=" px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm shadow">Download Excel</button>
         </div>
         <div class="flex flex-wrap items-center gap-3">
           <input id="guruQ" type="text" placeholder="Cari nama guru / siswa..." class="w-full sm:w-64 p-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm">
@@ -1063,14 +1064,37 @@ function viewPanitia() {
     lines.push(''); lines.push('Dikirim oleh Panitia SPMB.');
     return lines.join('\n');
   }
-  function openWaModal() {
+  // Teks WhatsApp rekap siswa per guru. Default hanya jumlah; nama siswa opsional.
+  function buildGuruText(withNames) {
+    const c = guruCompute(), st = DB.getSettings();
+    const list = c.list.filter(g => g.items.length);
+    const lines = [];
+    lines.push('*REKAP SISWA YANG DIBAWA GURU - SPMB*');
+    lines.push(st.schoolName || '');
+    lines.push('Tahun Ajaran: ' + (yearFilter === 'ALL' ? 'Semua Tahun Ajaran' : yearFilter));
+    lines.push('Per ' + new Date().toLocaleString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }).replace(/\./g, ':').replace(',', ' pukul') + ' WIB');
+    lines.push('');
+    lines.push('Guru membawa siswa: *' + list.length + '*');
+    lines.push('Pendaftar dibawa guru: ' + c.withGuru + ' dari ' + c.totalAktif + ' pendaftar aktif');
+    lines.push('Pendaftar tanpa guru: ' + (c.totalAktif - c.withGuru));
+    lines.push('');
+    if (!list.length) lines.push('Belum ada guru yang membawa siswa.');
+    list.forEach((g, i) => {
+      lines.push((i + 1) + '. ' + g.nama + ': *' + g.items.length + '* siswa');
+      if (withNames) g.items.forEach(s => lines.push('    - ' + (s.data.nama || '-')));
+    });
+    lines.push(''); lines.push('Dikirim oleh Panitia SPMB.');
+    return lines.join('\n');
+  }
+  function openWaModal(kind) {
+    const isGuru = kind === 'guru';
     const contacts = DB.getKepsekList().filter(c => normalizeWaNumber(c.nomor));
     const inp = 'w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500';
     const ov = el(`
       <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
         <div role="dialog" aria-modal="true" class="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-2xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 shadow-2xl p-6 space-y-4">
           <div class="flex justify-between items-start gap-3">
-            <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">Kirim Rekap ke WhatsApp</h3>
+            <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">${isGuru ? 'Kirim Rekap per Guru ke WhatsApp' : 'Kirim Rekap ke WhatsApp'}</h3>
             <button id="waX" type="button" class="text-slate-500 hover:text-slate-800 dark:hover:text-white font-bold">✕</button>
           </div>
           <div class="space-y-2">
@@ -1083,16 +1107,18 @@ function viewPanitia() {
           </div>
           <div class="space-y-2">
             <label class="text-xs font-bold uppercase text-slate-500">Isi pesan (boleh diedit)</label>
+            ${isGuru ? '<label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300"><input id="waNames" type="checkbox" class="rounded"> Sertakan nama siswa</label>' : ''}
             <textarea id="waText" rows="14" class="${inp} font-mono text-xs"></textarea>
           </div>
-          <p class="text-[11px] text-slate-500">WhatsApp akan terbuka dengan pesan siap kirim; tekan tombol Kirim di WhatsApp untuk mengirimnya. Pesan hanya berisi angka rekap, tanpa data pribadi pendaftar.</p>
+          <p class="text-[11px] text-slate-500">WhatsApp akan terbuka dengan pesan siap kirim; tekan tombol Kirim di WhatsApp untuk mengirimnya. ${isGuru ? 'Secara default pesan hanya berisi nama guru dan jumlah siswa.' : 'Pesan hanya berisi angka rekap, tanpa data pribadi pendaftar.'}</p>
           <div class="flex flex-wrap justify-end gap-2">
             <button id="waCopy" type="button" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-sm">Salin Teks</button>
             <button id="waSend" type="button" class="px-4 py-2 bg-emerald-500 text-white rounded-xl font-bold text-sm">Buka WhatsApp</button>
           </div>
         </div>
       </div>`);
-    ov.querySelector('#waText').value = buildRekapText();
+    ov.querySelector('#waText').value = isGuru ? buildGuruText(false) : buildRekapText();
+    if (isGuru) ov.querySelector('#waNames').onchange = e => { ov.querySelector('#waText').value = buildGuruText(e.target.checked); };
     const close = () => ov.remove();
     ov.querySelector('#waX').onclick = close;
     ov.onclick = e => { if (e.target === ov) close(); };
@@ -1114,7 +1140,8 @@ function viewPanitia() {
     };
     document.body.appendChild(ov);
   }
-  wrap.querySelector('#waBtn').onclick = openWaModal;
+  wrap.querySelector('#waBtn').onclick = () => openWaModal();
+  wrap.querySelector('#guruWa').onclick = () => openWaModal('guru');
 
   wrap.querySelector('#outBtn').onclick = () => { logoutSession('panitia'); currentRole='siswa'; renderApp(); };
   // Tab Panel Panitia: Rekapitulasi (statistik) dan Data Pendaftar (daftar masuk) dipisah
