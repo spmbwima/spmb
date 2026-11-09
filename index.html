@@ -2836,7 +2836,33 @@ function renderSettings(container) {
     pwCard.reset();
     toast('Kata sandi ' + (role === 'admin' ? 'Admin' : 'Panitia') + ' diperbarui', 'success');
   };
-  container.replaceChildren(linkCard, form, pwCard);
+  const resetCard = el(`
+    <form class="max-w-sm mt-8 p-4 rounded-2xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 space-y-3">
+      <div>
+        <p class="text-sm font-bold text-rose-700 dark:text-rose-300">Reset Nomor Pendaftaran</p>
+        <p class="text-xs text-slate-600 dark:text-slate-400 mt-1">Mengatur ulang hitungan nomor pendaftaran, misalnya setelah uji coba. Jika data dihapus, nomor berikutnya kembali ke 1. Jika data tidak dihapus, nomor berikutnya melanjutkan angka tertinggi yang ada.</p>
+      </div>
+      <label class="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200"><input type="checkbox" id="rsDel" checked class="rounded mt-0.5"> <span>Hapus <b>semua</b> data pendaftar (tidak bisa dibatalkan)</span></label>
+      <input type="text" id="rsConf" autocomplete="off" placeholder="Ketik RESET untuk konfirmasi" class="w-full p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white">
+      <button type="submit" class="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-lg text-sm">Reset Nomor</button>
+    </form>
+  `);
+  resetCard.onsubmit = async e => {
+    e.preventDefault();
+    if (resetCard.querySelector('#rsConf').value.trim() !== 'RESET') { toast('Ketik RESET (huruf besar) untuk konfirmasi', 'error'); return; }
+    const hapus = resetCard.querySelector('#rsDel').checked;
+    if (!confirm(hapus ? 'Semua data pendaftar akan DIHAPUS permanen dan nomor kembali ke 1. Lanjutkan?' : 'Atur ulang hitungan nomor pendaftaran?')) return;
+    try {
+      const r = await callRpc('spmb_reset_regno', { p_pass: authPass('admin'), p_hapus: hapus });
+      await loadPrivate();
+      resetCard.reset();
+      toast('Nomor direset. Nomor berikutnya: ' + (r && r.nomor_berikutnya != null ? r.nomor_berikutnya : '1') + (hapus ? ` (${(r && r.dihapus) || 0} data dihapus)` : ''), 'success');
+    } catch (err) {
+      if (/spmb_reset_regno/.test(err.message || '') && /find|exist|schema cache/i.test(err.message || '')) toast('Fungsi reset belum ada di Supabase. Jalankan setup_reset_nomor.sql dulu.', 'error');
+      else rpcFail(err.message || 'Gagal mereset nomor pendaftaran', err);
+    }
+  };
+  container.replaceChildren(linkCard, form, pwCard, resetCard);
 }
 
 function renderLogin(role) {
