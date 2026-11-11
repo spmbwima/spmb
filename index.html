@@ -667,6 +667,8 @@ function renderFieldInput(f, value = '') {
         <input type="text" name="${f.id}" value="${esc(value)}" autocomplete="off" class="cariInput ${cmn}" placeholder="Ketik untuk mencari ${esc(f.label).toLowerCase()}..." ${f.required ? 'required' : ''}>
         <div class="cariDropdown hidden absolute z-30 mt-1 w-full max-h-56 overflow-y-auto rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 shadow-xl"></div>
       </div>`;
+  } else if (f.type === 'hari') {
+    input = `<input type="number" inputmode="numeric" min="1" max="31" step="1" data-hari="1" name="${f.id}" value="${esc(value)}" class="${cmn}" placeholder="Isi angka 1 - 31" ${f.required ? 'required' : ''}>`;
   } else {
     input = `<input type="${f.type}" name="${f.id}" value="${esc(value)}" class="${cmn}" placeholder="Masukkan ${esc(f.label).toLowerCase()}..." ${f.required ? 'required' : ''}>`;
   }
@@ -723,6 +725,16 @@ document.addEventListener('click', e => {
     return;
   }
   if (!e.target.closest('.cariWrap')) document.querySelectorAll('.cariDropdown').forEach(d => d.classList.add('hidden'));
+});
+
+// Field "Angka 1-31": hanya angka bulat, otomatis dibatasi 1 sampai 31
+document.addEventListener('input', e => {
+  const t = e.target;
+  if (!t.matches || !t.matches('input[data-hari]')) return;
+  let v = String(t.value).replace(/\D/g, '').slice(0, 2);
+  if (v !== '' && Number(v) > 31) v = '31';
+  if (v !== '' && Number(v) < 1) v = '';
+  if (t.value !== v) t.value = v;
 });
 
 document.addEventListener('change', e => {
@@ -1607,7 +1619,7 @@ function viewAdmin() {
 }
 
 function fieldTypeLabel(t) {
-  return { text: 'Teks Singkat', textarea: 'Teks Panjang', date: 'Tanggal', select: 'Pilihan (Dropdown)', checkbox: 'Centang (Ya/Tidak)', cari: 'Cari (Referensi Data)', heading: 'Judul/Teks' }[t] || t;
+  return { text: 'Teks Singkat', textarea: 'Teks Panjang', date: 'Tanggal', hari: 'Angka 1-31 (Tanggal)', select: 'Pilihan (Dropdown)', checkbox: 'Centang (Ya/Tidak)', cari: 'Cari (Referensi Data)', heading: 'Judul/Teks' }[t] || t;
 }
 
 // Sumber data yang bisa dipakai oleh field bertipe "Cari"
@@ -1770,6 +1782,7 @@ function renderFormBuilder(container) {
                 <option value="text">Teks Singkat</option>
                 <option value="textarea">Teks Panjang</option>
                 <option value="date">Tanggal</option>
+                <option value="hari">Angka 1-31 (isi tanggal)</option>
                 <option value="select">Pilihan (Dropdown)</option>
                 <option value="checkbox">Centang (Ya/Tidak)</option>
                 <option value="cari">Cari (Referensi Data)</option>
