@@ -615,6 +615,7 @@ function cariAddChip(wrap, val) {
   input.focus();
 }
 
+const BULAN_ID = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
 function renderFieldInput(f, value = '') {
   const req = f.required ? '<span class="text-rose-500 font-bold ml-1">*</span>' : '';
   const cmn = "w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/50 focus:border-sky-500 transition-all text-sm";
@@ -667,6 +668,11 @@ function renderFieldInput(f, value = '') {
         <input type="text" name="${f.id}" value="${esc(value)}" autocomplete="off" class="cariInput ${cmn}" placeholder="Ketik untuk mencari ${esc(f.label).toLowerCase()}..." ${f.required ? 'required' : ''}>
         <div class="cariDropdown hidden absolute z-30 mt-1 w-full max-h-56 overflow-y-auto rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 shadow-xl"></div>
       </div>`;
+  } else if (f.type === 'bulan') {
+    input = `<select name="${f.id}" class="${cmn}" ${f.required ? 'required' : ''}>
+      <option value="">Pilih ${esc(f.label)}...</option>
+      ${BULAN_ID.map(b => `<option value="${b}" ${b === value ? 'selected' : ''}>${b}</option>`).join('')}
+    </select>`;
   } else if (f.type === 'hari') {
     input = `<input type="number" inputmode="numeric" min="1" max="31" step="1" data-hari="1" name="${f.id}" value="${esc(value)}" class="${cmn}" placeholder="Isi angka 1 - 31" ${f.required ? 'required' : ''}>`;
   } else {
@@ -1619,7 +1625,7 @@ function viewAdmin() {
 }
 
 function fieldTypeLabel(t) {
-  return { text: 'Teks Singkat', textarea: 'Teks Panjang', date: 'Tanggal', hari: 'Angka 1-31 (Tanggal)', select: 'Pilihan (Dropdown)', checkbox: 'Centang (Ya/Tidak)', cari: 'Cari (Referensi Data)', heading: 'Judul/Teks' }[t] || t;
+  return { text: 'Teks Singkat', textarea: 'Teks Panjang', date: 'Tanggal', hari: 'Angka 1-31 (Tanggal)', bulan: 'Bulan (Januari-Desember)', select: 'Pilihan (Dropdown)', checkbox: 'Centang (Ya/Tidak)', cari: 'Cari (Referensi Data)', heading: 'Judul/Teks' }[t] || t;
 }
 
 // Sumber data yang bisa dipakai oleh field bertipe "Cari"
@@ -1783,6 +1789,7 @@ function renderFormBuilder(container) {
                 <option value="textarea">Teks Panjang</option>
                 <option value="date">Tanggal</option>
                 <option value="hari">Angka 1-31 (isi tanggal)</option>
+                <option value="bulan">Bulan (Januari - Desember)</option>
                 <option value="select">Pilihan (Dropdown)</option>
                 <option value="checkbox">Centang (Ya/Tidak)</option>
                 <option value="cari">Cari (Referensi Data)</option>
@@ -2053,6 +2060,7 @@ function downloadImportTemplate() {
   fields.forEach((f, i) => {
     if (f.type === 'select' && !f.allowOther) dropdowns[i] = f.options || [];
     else if (f.type === 'checkbox') dropdowns[i] = ['Ya', 'Tidak'];
+    else if (f.type === 'bulan') dropdowns[i] = BULAN_ID;
     if (f.type !== 'date') textCols.push(i);
   });
   const required = fields.filter(f => f.required).map(f => f.label);
