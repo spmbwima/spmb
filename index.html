@@ -673,8 +673,8 @@ function renderFieldInput(f, value = '') {
       <option value="">Pilih ${esc(f.label)}...</option>
       ${BULAN_ID.map(b => `<option value="${b}" ${b === value ? 'selected' : ''}>${b}</option>`).join('')}
     </select>`;
-  } else if (f.type === 'hari') {
-    input = `<input type="number" inputmode="numeric" min="1" max="31" step="1" data-hari="1" name="${f.id}" value="${esc(value)}" class="${cmn}" placeholder="Isi angka 1 - 31" ${f.required ? 'required' : ''}>`;
+  } else if (f.type === 'angka' || f.type === 'hari') {
+    input = `<input type="text" inputmode="numeric" pattern="[0-9]+" title="Hanya boleh diisi angka" autocomplete="off" data-angka="1" name="${f.id}" value="${esc(value)}" class="${cmn}" placeholder="Masukkan ${esc(f.label).toLowerCase()} (hanya angka)..." ${f.required ? 'required' : ''}>`;
   } else {
     input = `<input type="${f.type}" name="${f.id}" value="${esc(value)}" class="${cmn}" placeholder="Masukkan ${esc(f.label).toLowerCase()}..." ${f.required ? 'required' : ''}>`;
   }
@@ -733,13 +733,11 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.cariWrap')) document.querySelectorAll('.cariDropdown').forEach(d => d.classList.add('hidden'));
 });
 
-// Field "Angka 1-31": hanya angka bulat, otomatis dibatasi 1 sampai 31
+// Field "Angka": hanya digit 0-9 (huruf, spasi, dan simbol otomatis dihapus, termasuk saat paste)
 document.addEventListener('input', e => {
   const t = e.target;
-  if (!t.matches || !t.matches('input[data-hari]')) return;
-  let v = String(t.value).replace(/\D/g, '').slice(0, 2);
-  if (v !== '' && Number(v) > 31) v = '31';
-  if (v !== '' && Number(v) < 1) v = '';
+  if (!t.matches || !t.matches('input[data-angka]')) return;
+  const v = String(t.value).replace(/\D/g, '');
   if (t.value !== v) t.value = v;
 });
 
@@ -1625,7 +1623,7 @@ function viewAdmin() {
 }
 
 function fieldTypeLabel(t) {
-  return { text: 'Teks Singkat', textarea: 'Teks Panjang', date: 'Tanggal', hari: 'Angka 1-31 (Tanggal)', bulan: 'Bulan (Januari-Desember)', select: 'Pilihan (Dropdown)', checkbox: 'Centang (Ya/Tidak)', cari: 'Cari (Referensi Data)', heading: 'Judul/Teks' }[t] || t;
+  return { text: 'Teks Singkat', textarea: 'Teks Panjang', date: 'Tanggal', angka: 'Angka (hanya digit)', bulan: 'Bulan (Januari-Desember)', hari: 'Angka (hanya digit)', select: 'Pilihan (Dropdown)', checkbox: 'Centang (Ya/Tidak)', cari: 'Cari (Referensi Data)', heading: 'Judul/Teks' }[t] || t;
 }
 
 // Sumber data yang bisa dipakai oleh field bertipe "Cari"
@@ -1788,7 +1786,7 @@ function renderFormBuilder(container) {
                 <option value="text">Teks Singkat</option>
                 <option value="textarea">Teks Panjang</option>
                 <option value="date">Tanggal</option>
-                <option value="hari">Angka 1-31 (isi tanggal)</option>
+                <option value="angka">Angka (hanya digit 0-9)</option>
                 <option value="bulan">Bulan (Januari - Desember)</option>
                 <option value="select">Pilihan (Dropdown)</option>
                 <option value="checkbox">Centang (Ya/Tidak)</option>
@@ -1844,7 +1842,7 @@ function renderFormBuilder(container) {
     `);
 
     const typeSel = overlay.querySelector('#fType');
-    typeSel.value = f.type;
+    typeSel.value = f.type === 'hari' ? 'angka' : f.type;
     overlay.querySelector('#fSource').value = f.source || 'guru_siswa';
     function syncOptVisibility() {
       const isHeading = typeSel.value === 'heading';
