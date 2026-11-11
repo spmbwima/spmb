@@ -103,6 +103,38 @@
     .print-only { display: block !important; }
     .glass-panel { background: none !important; border: none !important; box-shadow: none !important; }
   }
+
+  /* ===== Animasi pembuka: Sugeng Rawuh ===== */
+  #welcomeSplash { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; cursor: pointer; overflow: hidden;
+    background: linear-gradient(135deg, #047857 0%, #059669 50%, #0d9488 100%); color: #fff; transition: opacity .7s ease, transform .7s ease, visibility .7s; }
+  #welcomeSplash.out { opacity: 0; transform: scale(1.06); visibility: hidden; pointer-events: none; }
+  #welcomeSplash .orb { position: absolute; border-radius: 9999px; filter: blur(40px); opacity: .35; animation: wsFloat 7s ease-in-out infinite; }
+  #welcomeSplash .orb.o1 { width: 280px; height: 280px; background: #fde047; top: -60px; left: -60px; }
+  #welcomeSplash .orb.o2 { width: 340px; height: 340px; background: #34d399; bottom: -90px; right: -70px; animation-delay: -3s; }
+  #welcomeSplash .orb.o3 { width: 180px; height: 180px; background: #a3e635; top: 55%; left: 62%; animation-delay: -5s; }
+  #welcomeSplash .ws-logo { width: 84px; height: 84px; border-radius: 24px; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.35); display: flex; align-items: center; justify-content: center; margin-bottom: 22px;
+    backdrop-filter: blur(6px); animation: wsPop .8s cubic-bezier(.2,1.4,.4,1) both, wsPulse 2.4s ease-in-out .9s infinite; }
+  #welcomeSplash .ws-logo.has-img { width: 104px; height: 104px; border-radius: 28px; background: rgba(255,255,255,.96); padding: 10px; }
+  #welcomeSplash .ws-logo img { width: 100%; height: 100%; object-fit: contain; display: none; }
+  #welcomeSplash .ws-logo.has-img img { display: block; }
+  #welcomeSplash .ws-logo.has-img svg { display: none; }
+  #welcomeSplash .ws-hello { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; font-weight: 800; letter-spacing: -.02em; font-size: clamp(2.2rem, 8vw, 4rem); line-height: 1.1; }
+  #welcomeSplash .ws-hello span { display: inline-block; opacity: 0; transform: translateY(24px) scale(.9); animation: wsLetter .6s cubic-bezier(.2,1.2,.4,1) forwards; }
+  #welcomeSplash .ws-brand { margin-top: 10px; font-weight: 800; font-size: clamp(1.4rem, 5.5vw, 2.4rem); letter-spacing: .18em; opacity: 0; animation: wsFadeUp .8s ease 1.1s forwards;
+    background: linear-gradient(90deg, #fff 0%, #fde68a 40%, #fff 60%, #fff 100%); background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: wsFadeUp .8s ease 1.1s forwards, wsShine 2.6s linear 1.9s infinite; }
+  #welcomeSplash .ws-sub { margin-top: 8px; font-size: .9rem; opacity: 0; color: rgba(255,255,255,.85); animation: wsFadeUp .8s ease 1.5s forwards; }
+  #welcomeSplash .ws-bar { margin-top: 28px; width: 160px; height: 4px; border-radius: 9999px; background: rgba(255,255,255,.25); overflow: hidden; opacity: 0; animation: wsFadeUp .5s ease 1.6s forwards; }
+  #welcomeSplash .ws-bar i { display: block; height: 100%; width: 0; background: #fff; border-radius: 9999px; animation: wsBar 2.2s ease-in-out 1.7s forwards; }
+  #welcomeSplash .ws-skip { position: absolute; bottom: 22px; font-size: .7rem; letter-spacing: .08em; color: rgba(255,255,255,.65); opacity: 0; animation: wsFadeUp .6s ease 2s forwards; }
+  @keyframes wsLetter { to { opacity: 1; transform: none; } }
+  @keyframes wsFadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  @keyframes wsPop { from { opacity: 0; transform: scale(.3) rotate(-20deg); } to { opacity: 1; transform: none; } }
+  @keyframes wsPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,255,255,.45); } 50% { box-shadow: 0 0 0 18px rgba(255,255,255,0); } }
+  @keyframes wsShine { to { background-position: -220% 0; } }
+  @keyframes wsBar { to { width: 100%; } }
+  @keyframes wsFloat { 0%,100% { transform: translate(0,0); } 50% { transform: translate(26px,-30px); } }
+  @media (prefers-reduced-motion: reduce) { #welcomeSplash *, #welcomeSplash { animation-duration: .01s !important; animation-delay: 0s !important; } }
+  @media print { #welcomeSplash { display: none !important; } }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
@@ -110,6 +142,50 @@
 </head>
 
 <body class="min-h-full flex flex-col antialiased bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-300 selection:bg-sky-500 selection:text-white">
+
+<div id="welcomeSplash" role="dialog" aria-label="Selamat datang di SPMB WIMATA">
+  <span class="orb o1"></span><span class="orb o2"></span><span class="orb o3"></span>
+  <div class="ws-logo" id="wsLogo">
+    <img id="wsLogoImg" alt="Logo Sekolah">
+    <svg class="w-10 h-10" style="width:40px;height:40px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14l9-5-9-5-9 5 9 5z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0112 20.055a11.952 11.952 0 01-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z"/></svg>
+  </div>
+  <div class="ws-hello" id="wsHello" aria-label="Sugeng Rawuh"></div>
+  <div class="ws-brand">SPMB WIMATA</div>
+  <div class="ws-sub">Seleksi Penerimaan Murid Baru</div>
+  <div class="ws-bar"><i></i></div>
+  <div class="ws-skip">Ketuk layar untuk melanjutkan</div>
+</div>
+<script>
+(function () {
+  var sp = document.getElementById('welcomeSplash'), h = document.getElementById('wsHello');
+  if (!sp) return;
+  // Huruf muncul satu per satu
+  var d = 0;
+  'Sugeng Rawuh'.split(' ').forEach(function (w, wi, arr) {
+    var word = document.createElement('span'); word.style.cssText = 'display:inline-block;opacity:1;transform:none;animation:none;white-space:nowrap';
+    w.split('').forEach(function (ch) {
+      var s = document.createElement('span'); s.textContent = ch; s.style.animationDelay = (0.25 + d * 0.06) + 's'; d++; word.appendChild(s);
+    });
+    h.appendChild(word);
+    if (wi < arr.length - 1) { h.appendChild(document.createTextNode(' ')); d++; }
+  });
+  // Logo sekolah: dipakai dari cache (agar langsung tampil) dan diperbarui begitu data dari server dimuat
+  var box = document.getElementById('wsLogo'), img = document.getElementById('wsLogoImg');
+  window.setSplashLogo = function (src) {
+    if (!src || !box || !img) return;
+    img.onload = function () { box.classList.add('has-img'); };
+    img.onerror = function () { box.classList.remove('has-img'); };
+    if (img.getAttribute('src') !== src) img.src = src;
+    try { localStorage.setItem('spmb_splash_logo', src); } catch (e) {}
+  };
+  try { var cached = localStorage.getItem('spmb_splash_logo'); if (cached) window.setSplashLogo(cached); } catch (e) {}
+  var closed = false;
+  function close() { if (closed) return; closed = true; sp.classList.add('out'); setTimeout(function () { sp.remove(); }, 800); }
+  sp.addEventListener('click', close);
+  document.addEventListener('keydown', close, { once: true });
+  setTimeout(close, 4200);
+})();
+</script>
 
 <header class="no-print sticky top-0 z-40 w-full glass-panel border-b-0">
   <div id="hdrInner" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
@@ -2946,6 +3022,7 @@ function updateHeader() {
   document.getElementById('footerYear').textContent = new Date().getFullYear();
   const rl = document.getElementById('roleLabel'); if (rl) rl.textContent = currentRole === 'siswa' ? 'Portal Siswa' : currentRole === 'panitia' ? 'Panel Panitia' : 'Panel Admin';
 
+  if (window.setSplashLogo && s.logo) window.setSplashLogo(s.logo);
   const logoImg = document.getElementById('customLogoImg'), defaultIcon = document.getElementById('defaultLogoIcon');
   if (s.logo) { logoImg.src = s.logo; logoImg.classList.remove('hidden'); defaultIcon.classList.add('hidden'); }
   else { logoImg.classList.add('hidden'); logoImg.removeAttribute('src'); defaultIcon.classList.remove('hidden'); }
