@@ -346,7 +346,7 @@ function toggleTheme() {
 // Local cache kept in sync with Supabase. Reads (getX) are synchronous and
 // hit this cache; writes (saveX/addX/updateX) push to Supabase and patch the
 // cache immediately so the UI stays responsive.
-const cache = { settings: null, schema: null, subs: [], guruSiswa: [], smp: [], fee: null, kop: '', kepsek: [] };
+const cache = { settings: null, schema: null, subs: [], guruSiswa: [], smp: [], fee: null, kop: '', kepsek: [], waGroup: { link: '', note: '' } };
 
 function mapSettingsRow(r) {
   return {
@@ -398,9 +398,11 @@ async function loadPrivate() {
   cache.kop = (kp && Array.isArray(kp.items) && kp.items[0] && typeof kp.items[0].image === 'string') ? kp.items[0].image : '';
   cache.fee = (fc && Array.isArray(fc.items) && fc.items[0] && typeof fc.items[0] === 'object') ? fc.items[0] : null;
   cache.kepsek = (ks && Array.isArray(ks.items)) ? ks.items : [];
+  const wg = find('wa_group');
+  cache.waGroup = (wg && Array.isArray(wg.items) && wg.items[0] && typeof wg.items[0] === 'object') ? { link: wg.items[0].link || '', note: wg.items[0].note || '' } : { link: '', note: '' };
 }
 function clearPrivate() {
-  cache.subs = []; cache.fee = null; cache.kop = ''; cache.kepsek = [];
+  cache.subs = []; cache.fee = null; cache.kop = ''; cache.kepsek = []; cache.waGroup = { link: '', note: '' };
 }
 function logoutSession(role) {
   sessionStorage.removeItem(`spmb_${role}_auth`); sessionStorage.removeItem(`spmb_${role}_pw`);
@@ -488,6 +490,12 @@ const DB = {
     cache.kepsek = items;
     callRpc('spmb_save_list', { p_pass: authPass('admin'), p_id: 'kepsek', p_items: items })
       .catch(e => rpcFail('Gagal menyimpan nomor WhatsApp ke server', e));
+  },
+  // Link grup WhatsApp siswa baru: spmb_lists id 'wa_group' (privat; hanya dikirim ke siswa yang sudah terverifikasi lewat cek status)
+  getWaGroup: () => cache.waGroup || { link: '', note: '' },
+  saveWaGroup: async function(v) {
+    try { await callRpc('spmb_save_list', { p_pass: authPass('admin'), p_id: 'wa_group', p_items: [v] }); cache.waGroup = v; return true; }
+    catch (e) { rpcFail('Gagal menyimpan link grup WhatsApp ke server', e); return false; }
   },
   getSmpList: () => cache.smp || [],
   saveSmpList: function(items) {
@@ -1060,6 +1068,12 @@ function viewSiswa() {
             </div>
             <ol>${steps}</ol>
           </div>
+          ${(ver && !wd && res.wa_link && isWaGroupLink(res.wa_link)) ? `
+          <div class="rounded-3xl p-6 sm:p-8 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 space-y-3 text-center">
+            <p class="font-display font-extrabold text-lg text-emerald-800 dark:text-emerald-300">Langkah selanjutnya: masuk grup siswa baru</p>
+            <p class="text-sm text-emerald-900/80 dark:text-emerald-200/80">${esc(res.wa_note || 'Selamat, pendaftaran Anda sudah terverifikasi. Silakan bergabung ke grup WhatsApp siswa baru untuk mendapat informasi selanjutnya.')}</p>
+            <a href="${esc(res.wa_link)}" target="_blank" rel="noopener" class="inline-block px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-lg shadow-emerald-500/30">Gabung Grup WhatsApp</a>
+          </div>` : ''}
         </div>`);
       card.querySelectorAll('.last-line').forEach((n, i, a) => { if (i === a.length - 1) n.remove(); });
       out.replaceChildren(card);
@@ -1731,6 +1745,44 @@ function renderKepsekAdmin(container) {
   draw(); container.replaceChildren(wrap);
 }
 
+function isWaGroupLink(v) { return /^https:\/\/chat\.whatsapp\.com\/[A-Za-z0-9_-]{10,}\/?(\?.*)?$/.test(String(v || '').trim()); }
+function renderWaGroupAdmin(container) {
+  const cur = DB.getWaGroup();
+  const inp = 'w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500';
+  const wrap = el(`
+    <div class="space-y-4 max-w-3xl">
+      <div>
+        <h3 class="font-display text-lg font-bold text-slate-900 dark:text-white">Grup WhatsApp Siswa Baru</h3>
+        <p class="text-xs text-slate-500">Link ini <b>hanya muncul untuk pendaftar yang sudah terverifikasi</b> (di tab Cek Status Pendaftaran), berupa tombol ajakan masuk grup. Pendaftar yang belum diverifikasi atau yang sudah cabut berkas tidak melihatnya. Kosongkan lalu simpan untuk menyembunyikan.</p>
+      </div>
+      <label class="block space-y-1"><span class="text-xs font-bold uppercase text-slate-500">Link undangan grup</span>
+        <input id="wgLink" class="${inp}" placeholder="https://chat.whatsapp.com/xxxxxxxxxxxx" value="${esc(cur.link)}"></label>
+      <p id="wgHint" class="text-[11px]"></p>
+      <label class="block space-y-1"><span class="text-xs font-bold uppercase text-slate-500">Pesan untuk siswa (opsional)</span>
+        <textarea id="wgNote" rows="3" class="${inp}" placeholder="mis. Selamat! Silakan masuk grup WhatsApp siswa baru untuk info MPLS, seragam, dan jadwal.">${esc(cur.note)}</textarea></label>
+      <div class="flex flex-wrap gap-2">
+        <button id="wgSave" type="button" class="px-4 py-2 bg-emerald-500 text-white rounded-xl font-bold text-sm">Simpan</button>
+        <a id="wgTest" target="_blank" rel="noopener" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-sm ${isWaGroupLink(cur.link) ? '' : 'hidden'}" href="${esc(cur.link)}">Uji Buka Link</a>
+      </div>
+    </div>`);
+  const link = wrap.querySelector('#wgLink'), hint = wrap.querySelector('#wgHint');
+  const upd = () => {
+    const v = link.value.trim();
+    hint.className = 'text-[11px] ' + (!v ? 'text-slate-400' : isWaGroupLink(v) ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400');
+    hint.textContent = !v ? 'Belum diisi: tombol grup tidak ditampilkan ke siswa.' : isWaGroupLink(v) ? 'Format link valid.' : 'Format link belum valid. Salin dari WhatsApp: Info grup > Undang via tautan.';
+  };
+  link.oninput = upd; upd();
+  wrap.querySelector('#wgSave').onclick = async () => {
+    const v = link.value.trim();
+    if (v && !isWaGroupLink(v)) { toast('Link harus berbentuk https://chat.whatsapp.com/...', 'error'); return; }
+    if (await DB.saveWaGroup({ link: v, note: wrap.querySelector('#wgNote').value.trim() })) {
+      const t = wrap.querySelector('#wgTest'); t.href = v; t.classList.toggle('hidden', !v);
+      toast(v ? 'Link grup tersimpan' : 'Link grup dikosongkan', 'success');
+    }
+  };
+  container.replaceChildren(wrap);
+}
+
 function viewAdmin() {
   if (sessionStorage.getItem('spmb_admin_auth') !== '1') return renderLogin('admin');
   let activeTab = 'form';
@@ -1742,7 +1794,7 @@ function viewAdmin() {
         <button id="outBtn" class="px-4 py-2 bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-xl font-bold text-sm">Keluar</button>
       </div>
       <div class="flex gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 overflow-x-auto">
-        ${[{id:'form', l:'Form Builder'},{id:'data', l:'Data (CSV)'},{id:'guru_siswa', l:'Data Guru/Siswa'},{id:'fee', l:'Rekap Fee Sponsor'},{id:'smp', l:'Data SMP'},{id:'kepsek', l:'Nomor WA Kepsek'},{id:'slideshow', l:'Slideshow'},{id:'settings', l:'Pengaturan'}].map(t => `
+        ${[{id:'form', l:'Form Builder'},{id:'data', l:'Data (CSV)'},{id:'guru_siswa', l:'Data Guru/Siswa'},{id:'fee', l:'Rekap Fee Sponsor'},{id:'smp', l:'Data SMP'},{id:'kepsek', l:'Nomor WA Kepsek'},{id:'wagroup', l:'Grup WA Siswa Baru'},{id:'slideshow', l:'Slideshow'},{id:'settings', l:'Pengaturan'}].map(t => `
           <button data-tab="${t.id}" class="tab-btn px-4 py-2 rounded-xl font-bold text-sm transition-colors whitespace-nowrap">${t.l}</button>
         `).join('')}
       </div>
@@ -1764,6 +1816,7 @@ function viewAdmin() {
     if(activeTab==='fee') renderFeeAdmin(c);
     if(activeTab==='smp') renderSmpAdmin(c);
     if(activeTab==='kepsek') renderKepsekAdmin(c);
+    if(activeTab==='wagroup') renderWaGroupAdmin(c);
     if(activeTab==='slideshow') renderSlideshowAdmin(c);
     if(activeTab==='settings') renderSettings(c);
   }
