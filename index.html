@@ -364,7 +364,7 @@ function defaultSlides() {
   ];
 }
 function mapSubRow(r) {
-  return { id: r.id, regNo: r.reg_no, data: r.data || {}, source: r.source || 'siswa', verified: !!r.verified, withdrawn: !!r.withdrawn, year: r.year, createdAt: r.created_at };
+  return { id: r.id, regNo: r.reg_no, data: r.data || {}, source: r.source || 'siswa', verified: !!r.verified, withdrawn: !!r.withdrawn, year: r.year, createdAt: r.created_at, verifiedAt: r.verified_at || null, withdrawnAt: r.withdrawn_at || null };
 }
 
 // ===== Akses data lewat fungsi database ber-sandi (lihat setup_keamanan.sql) =====
@@ -874,7 +874,23 @@ function helpdeskCard() {
 
 function viewSiswa() {
   const fullSchema = DB.getSchema(), schema = publicSchema(fullSchema), settings = DB.getSettings();
-  let step = 1, draft = {};
+  let step = 1, draft = {}, mode = 'form';
+
+  // Tab: Daftar Baru | Cek Status (progres pendaftaran milik siswa sendiri)
+  function tabsHtml(active) {
+    const b = (k, label) => `<button type="button" data-tab="${k}" class="flex-1 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${active === k ? 'bg-white dark:bg-slate-800 text-sky-700 dark:text-sky-300 shadow border border-slate-200 dark:border-slate-700' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white'}">${label}</button>`;
+    return `<div class="no-print max-w-md mx-auto flex gap-1 p-1 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">${b('form', 'Daftar Baru')}${b('status', 'Cek Status Pendaftaran')}</div>`;
+  }
+  function bindTabs(wrap) {
+    wrap.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => {
+      mode = b.dataset.tab;
+      if (mode === 'status') renderStatus(); else render();
+      window.scrollTo(0, 0);
+    });
+  }
+  const MY_REG_KEY = 'spmb_my_registration';
+  function loadMyReg() { try { return JSON.parse(localStorage.getItem(MY_REG_KEY) || 'null'); } catch (e) { return null; } }
+  function saveMyReg(v) { try { localStorage.setItem(MY_REG_KEY, JSON.stringify(v)); } catch (e) {} }
 
   function render() {
     const wrap = el(`
@@ -886,6 +902,8 @@ function viewSiswa() {
           <h2 class="font-display text-3xl sm:text-4xl font-extrabold text-slate-900 dark:text-white tracking-tight">${esc(settings.formTitle || 'Formulir Pendaftaran')}</h2>
           <p class="text-slate-600 dark:text-slate-400 text-sm max-w-xl mx-auto">${esc(settings.schoolName)}</p>
         </div>
+
+        ${tabsHtml('form')}
 
         <div id="slidesArea"></div>
 
@@ -907,6 +925,7 @@ function viewSiswa() {
       </div>
     `);
 
+    bindTabs(wrap);
     wrap.querySelector('#slidesArea').appendChild(createSlideshowComponent(settings.slides));
     const body = wrap.querySelector('#stepBody');
 
@@ -952,6 +971,7 @@ function viewSiswa() {
   }
 
   function renderDone(entry) {
+    saveMyReg({ nisn: String((entry.data && entry.data.nisn) || draft.nisn || '') });
     const wrap = el(`
       <div class="max-w-2xl mx-auto">
         <div class="glass-panel rounded-3xl p-8 sm:p-10 text-center space-y-6 border-emerald-500/30">
@@ -965,15 +985,104 @@ function viewSiswa() {
               <button onclick="window.print()" class="px-4 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-200 font-bold flex gap-1"><svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg> Cetak</button>
             </div>
           </div>
+          <p class="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">Pantau progres pendaftaran Anda kapan saja lewat tab <b>Cek Status Pendaftaran</b> memakai NISN.</p>
+          <button id="statusBtn" class="px-6 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-sm font-bold shadow-lg shadow-sky-500/30">Cek Status Pendaftaran</button>
           <button id="againBtn" class="px-6 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-bold border border-slate-200 dark:border-slate-700 mt-4">+ Daftar Peserta Lain</button>
         </div>
         <div class="mt-6">${helpdeskCard()}</div>
       </div>
     `);
     wrap.querySelector('#cpy').onclick = () => copyToClipboard(entry.regNo);
-    wrap.querySelector('#againBtn').onclick = () => { draft={}; step=1; render(); };
+    wrap.querySelector('#statusBtn').onclick = () => { mode = 'status'; renderStatus(); window.scrollTo(0, 0); };
+    wrap.querySelector('#againBtn').onclick = () => { draft={}; step=1; mode='form'; render(); };
     document.getElementById('app').replaceChildren(wrap);
   }
+  // ===== Cek Status: siswa melihat progres pendaftaran mandiri miliknya =====
+  function renderStatus(prefill) {
+    const saved = prefill || loadMyReg() || {};
+    const wrap = el(`
+      <div class="max-w-2xl mx-auto space-y-6">
+        <div class="text-center space-y-2">
+          <h2 class="font-display text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">Cek Status Pendaftaran</h2>
+          <p class="text-slate-600 dark:text-slate-400 text-sm max-w-md mx-auto">Masukkan NISN Anda untuk melihat sudah sampai mana progres pendaftaran Anda.</p>
+        </div>
+        ${tabsHtml('status')}
+        <form id="stF" class="glass-panel rounded-3xl p-6 sm:p-8 space-y-4">
+          <label class="block"><span class="text-xs font-bold uppercase text-slate-500">NISN</span>
+            <input id="stNisn" required inputmode="numeric" autocomplete="off" value="${esc(saved.nisn || '')}" placeholder="Masukkan NISN Anda" class="mt-1 w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono"></label>
+          <button type="submit" id="stBtn" class="w-full px-6 py-3.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 text-white font-bold text-sm shadow-lg shadow-sky-500/30">Cek Status</button>
+          <p class="text-xs text-slate-500 dark:text-slate-400">Berlaku untuk pendaftaran yang Anda isi sendiri maupun yang diinput panitia.</p>
+        </form>
+        <div id="stResult"></div>
+        ${helpdeskCard()}
+      </div>
+    `);
+    bindTabs(wrap);
+    const out = wrap.querySelector('#stResult'), btn = wrap.querySelector('#stBtn');
+
+    const fmt = (f, v) => f.type === 'checkbox' ? (v ? 'Ya' : 'Tidak')
+      : (f.type === 'date' && v ? (() => { const d = new Date(v); return isNaN(d) ? String(v) : d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }); })() : String(v ?? ''));
+    const fdt = t => t ? new Date(t).toLocaleString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+
+    function step(state, title, desc, time) {
+      const ring = state === 'done' ? 'bg-emerald-500 text-white' : state === 'bad' ? 'bg-rose-500 text-white' : state === 'now' ? 'bg-amber-400 text-white animate-pulse' : 'bg-slate-200 dark:bg-slate-700 text-slate-400';
+      const icon = state === 'done' ? '✓' : state === 'bad' ? '✕' : state === 'now' ? '…' : '•';
+      return `<li class="flex gap-4"><div class="flex flex-col items-center"><span class="w-9 h-9 rounded-full flex items-center justify-center font-bold ${ring}">${icon}</span><span class="flex-1 w-px bg-slate-200 dark:bg-slate-700 my-1 last-line"></span></div>
+        <div class="pb-6"><p class="font-bold text-sm text-slate-900 dark:text-white">${esc(title)}</p><p class="text-xs text-slate-600 dark:text-slate-400 mt-0.5">${esc(desc)}</p>${time ? `<p class="text-xs text-slate-500 mt-1">${esc(time)}</p>` : ''}</div></li>`;
+    }
+
+    function showResult(res) {
+      if (!res || !res.found) {
+        out.replaceChildren(el(`<div class="rounded-2xl p-5 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-300 text-sm">Data tidak ditemukan. Pastikan NISN benar. Jika masih tidak ditemukan, hubungi panitia untuk memeriksa NISN pada data Anda.</div>`));
+        return;
+      }
+      const wd = res.withdrawn, ver = res.verified;
+      const badge = wd ? ['Cabut Berkas / Keluar', 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300']
+        : ver ? ['Terverifikasi', 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300']
+        : ['Menunggu Verifikasi Panitia', 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'];
+      const steps = [
+        res.source === 'siswa'
+          ? step('done', 'Pendaftaran terkirim', 'Data Anda sudah diterima sistem.', fdt(res.created_at))
+          : step('done', 'Data didaftarkan oleh panitia', 'Panitia sudah memasukkan data pendaftaran Anda ke sistem.', fdt(res.created_at)),
+        wd
+          ? step('bad', 'Berkas dicabut / keluar', 'Pendaftaran ini ditandai dicabut atau mengundurkan diri. Hubungi panitia jika ini keliru.', fdt(res.withdrawn_at))
+          : ver
+            ? step('done', 'Terverifikasi panitia', 'Data dan berkas Anda telah diperiksa dan dinyatakan sah.', fdt(res.verified_at))
+            : step('now', 'Menunggu verifikasi panitia', 'Panitia sedang/akan memeriksa data Anda. Cek kembali nanti.', '')
+      ].join('');
+      const card = el(`
+        <div class="space-y-5">
+          <div class="glass-panel rounded-3xl p-6 sm:p-8 space-y-6">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div><p class="text-xs font-bold uppercase text-slate-500">${esc(res.nama || 'Pendaftar')} · No. Registrasi</p><p class="font-display font-black text-2xl text-sky-600 dark:text-sky-400 select-all">${esc(res.reg_no)}</p>
+                <p class="text-xs text-slate-500 mt-1">Tahun ajaran ${esc(res.year || '')}</p></div>
+              <span class="px-3 py-1.5 rounded-full text-xs font-bold ${badge[1]}">${badge[0]}</span>
+            </div>
+            <ol>${steps}</ol>
+          </div>
+        </div>`);
+      card.querySelectorAll('.last-line').forEach((n, i, a) => { if (i === a.length - 1) n.remove(); });
+      out.replaceChildren(card);
+    }
+
+    async function check() {
+      const nisn = wrap.querySelector('#stNisn').value.trim();
+      btn.disabled = true; btn.textContent = 'Memeriksa...';
+      try {
+        const res = await callRpc('spmb_check_status', { p_nisn: nisn });
+        if (res && res.found) saveMyReg({ nisn });
+        showResult(res);
+      } catch (e) {
+        console.error(e);
+        out.replaceChildren(el(`<div class="rounded-2xl p-5 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-800 dark:text-rose-300 text-sm">Gagal menghubungi server. Pastikan setup_status_pendaftar.sql sudah dijalankan di Supabase, lalu coba lagi.</div>`));
+      }
+      btn.disabled = false; btn.textContent = 'Cek Status';
+    }
+    wrap.querySelector('#stF').onsubmit = e => { e.preventDefault(); check(); };
+    document.getElementById('app').replaceChildren(wrap);
+    if (saved.nisn) check();   // otomatis tampilkan progres pendaftaran terakhir di perangkat ini
+  }
+
   render();
 }
 
@@ -1331,10 +1440,20 @@ function viewPanitia() {
     box.querySelector('#cancel').onclick = renderList;
     box.querySelector('#eForm').onsubmit = async e => {
       e.preventDefault(); const d = collectForm(e.target, schema);
-      if(ext) DB.updateSubmission(ext.id, {data:d}); else await DB.addSubmission(d, 'panitia');
-      toast('Data tersimpan', 'success'); drawStats(); renderList();
+      let saved = null;
+      if(ext) DB.updateSubmission(ext.id, {data:d}); else saved = await DB.addSubmission(d, 'panitia');
+      toast(saved ? `Data tersimpan. No. Registrasi: ${saved.regNo} (buka Detail > Salin Info Cek Status untuk diberikan ke pendaftar)` : 'Data tersimpan', 'success'); drawStats(); renderList();
     };
     wrap.querySelector('#pContent').replaceChildren(box);
+  }
+
+  // Teks untuk dibagikan ke pendaftar (WA dsb.) agar ia bisa memantau progres sendiri
+  function statusShareText(entry) {
+    const url = location.href.split('#')[0].split('?')[0] + '?mode=siswa';
+    return `Halo ${entry.data.nama || ''},\n` +
+      `Pendaftaran Anda di ${DB.getSettings().schoolName || 'sekolah kami'} sudah tercatat.\n\n` +
+      `Pantau progres pendaftaran Anda di: ${url}\n` +
+      `(buka tab "Cek Status Pendaftaran", isi NISN)`;
   }
 
   // Modal detail: menampilkan seluruh data inputan pendaftar (semua field formulir + info pendaftaran)
@@ -1370,8 +1489,9 @@ function viewPanitia() {
     const status = entry.withdrawn ? 'Cabut Berkas/Keluar' : (entry.verified ? 'Terverifikasi' : 'Pending (belum terverifikasi)');
     const info =
       item('No. Pendaftaran', entry.regNo) + item('Tahun Ajaran', entry.year) +
-      item('Status', status) + item('Sumber Input', entry.source === 'panitia' ? 'Diinput panitia' : 'Pendaftaran online (siswa)') +
-      item('Tanggal Daftar', entry.createdAt ? new Date(entry.createdAt).toLocaleString('id-ID') : '');
+      item('Status', status) + item('Sumber Input', entry.source === 'panitia' ? 'Diinput panitia' : entry.source === 'import' ? 'Impor Excel' : 'Pendaftaran online (siswa)') +
+      item('Tanggal Daftar', entry.createdAt ? new Date(entry.createdAt).toLocaleString('id-ID') : '') +
+      (entry.verifiedAt ? item('Waktu Verifikasi', new Date(entry.verifiedAt).toLocaleString('id-ID')) : '');
 
     const ov = el(`
       <div class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/70">
@@ -1387,7 +1507,8 @@ function viewPanitia() {
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${info}</div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${body}</div>
           </div>
-          <div class="flex justify-end gap-2 p-4 border-t border-slate-200 dark:border-slate-800">
+          <div class="flex flex-wrap justify-end gap-2 p-4 border-t border-slate-200 dark:border-slate-800">
+            <button type="button" data-x="share" class="px-4 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 font-bold text-sm">Salin Info Cek Status</button>
             <button type="button" data-x="edit" class="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100 font-bold text-sm">Edit</button>
             <button type="button" data-x="close" class="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-sm">Tutup</button>
           </div>
@@ -1398,6 +1519,11 @@ function viewPanitia() {
     ov.onclick = e => {
       if (e.target === ov) return close();
       const b = e.target.closest('button[data-x]'); if (!b) return;
+      if (b.dataset.x === 'share') {
+        if (!String((entry.data && entry.data.nisn) || '').trim()) { toast('NISN pendaftar ini masih kosong; isi dulu lewat Edit agar bisa dicek.', 'error'); return; }
+        copyToClipboard(statusShareText(entry));
+        return;
+      }
       close();
       if (b.dataset.x === 'edit') openForm(entry);
     };
